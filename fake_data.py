@@ -1,8 +1,10 @@
 import numpy as np
-from itertools import product, combinations
+from itertools import product
 from typing import NamedTuple
 import random
 import argparse
+
+from energy import Energy
 
 class HSQCPeak(NamedTuple):
 	H1: float
@@ -93,63 +95,6 @@ def generate_data(num_resid):
 
 	return coords, actual_shifts, predicted_shifts, noes
 
-# match H1 shifts
-def matchH(hshift, hsqc, tolerance_h):
-	"""
-	Loops through the HSQC list and matches the second proton shift of the NOE to a HSQC shift based on H cutoff.
-	Returns the index of said shift.
-	"""
-	h_index = []
-	for i, shift in enumerate(hsqc):
-		if abs(hshift - shift.H1) <= tolerance_h:
-			h_index.append(i)
-
-	return h_index
-
-# match H1 and N15 shifts
-def matchNH(hshift, nshift, hsqc, tolerance_h, tolerance_n):
-	"""
-	Loops through the HSQC list and matches the first proton and nitrogen shift of the NOE to a HSQC shift based on H and N cutoffs.
-	Returns the index of said shift.
-	"""
-	nh_index = []
-	for i, shift in enumerate(hsqc):
-		if abs(hshift - shift.H1) <= tolerance_h and abs(nshift - shift.N15) <= tolerance_n:
-			nh_index.append(i)
-
-	return nh_index
-
-def noe_combinations(noes, actual_shifts, tolerance_h=0.2, tolerance_n=0.2):
-	"""
-	Loops through the NOES to match the H1, N1 and H2 shifts to two HSQC shifts.
-	Lists the HSQC shifts separately (H1/N1 as contact1 and H2 as contact2) for each NOE.
-	Returns a lists of tuples of all possible shift index combinations for each NOE.
-	ex. [[(1,2),(1,3)],[(3,0)]]
-		1 and 2 are a pair of potential shift indices for one NOE, 1 and 3 are another for the same NOE.
-	"""
-	contact1 = []
-	contact2 = []
-	for i, peak in enumerate(noes):
-		# matching H1 and N15 in NOE to shifts in HSQC
-		nh_index = matchNH(peak.H1, peak.N15, actual_shifts, tolerance_h, tolerance_n)
-		# matching H2 in NOE to H1 shifts in HSQC
-		h_index = matchH(peak.H2, actual_shifts, tolerance_h)
-
-		contact1.append(nh_index)
-		contact2.append(h_index)
-
-	# print(contact1)
-	# print(contact2)
-	
-	contacts = []
-	for i, contact in enumerate(contact1):
-		prod = product(contact, contact2[i])
-		# filter out same shift pairs and inverted duplicates (ex. (0,0) and [(0,1),(1,0)])
-		pairs = set(tuple(sorted(combo)) for combo in prod if combo[0] != combo[1])
-		contacts.append(list(pairs))
-
-	return contacts
-
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
 	parser.add_argument('num_resid', type=int, help='Number of residues')
@@ -158,5 +103,8 @@ if __name__ == '__main__':
 	num_resid = args.num_resid
 	# These should be grouped to export into an environment
 	coords, actual_shifts, predicted_shifts, noes = generate_data(num_resid)
-	combinations = noe_combinations(noes, actual_shifts)
-	print(combinations)
+
+	# energy_obj = Energy(coords, actual_shifts, noes)
+	# test = energy_obj.setup_noe_restraints()
+	# test_energy = energy_obj.energy_loop(test)
+	# print(test_energy)
