@@ -88,35 +88,34 @@ class Energy():
 					lambda x: x**2 - xmax*x])    
 		return y
 	
-	def energy_loop(self, restraints, assignments):
+	def get_energy(self, restraints, assignments):
 		"""
-		Loops over the NOE restraints and then each possible shift option.
-		If these shift options have been assigned, the NOE is activated, if not the NOE restraint should be passed.
+		Loops over the NOE restraints and each possible shift option.
+		If these shift options have not been assigned the NOE is deactivated and passed, if not the NOE restraint stays activated.
 		Activation means the coordinate indices are grabbed from the assignment dictionary and used in the flat_bottom function.
-		Energy is then summed across all activated NOEs.
+		The lowest energy restraint is then summed across all activated NOEs.
 		"""
 
 		total_energy = 0
-		# assignments = {0: 0, 1 : 1, 2 : 2, 3 : 3} # this would be added to parameters as external dict
 		for restraint in restraints:
 			restraint_energy = math.inf
-			activated = False
+			activated = True
 			for i, j in restraint:
-				if i in assignments.values() and j in assignments.values():
-					activated = True
+				if i not in assignments.values() or j not in assignments.values():
+					activated = False
+					break
 
+				elif activated:
 					k, l = assignments.get(i), assignments.get(j)
+
 					# distance to energy evaluation
 					dist = np.linalg.norm((np.array(self.coords[k]) - np.array(self.coords[l])))
 					energy_value = self.flat_bottom(dist, tolerance=0.5)
+
 					# keep the smallest energy (distance)
 					restraint_energy = energy_value if energy_value < restraint_energy else restraint_energy
-					# add energy to the summation of the restraints
-					# problem with this adding the restraint energy each time in inner loop
-					total_energy += restraint_energy
-
-				else:
-					# NOE not activated
-					break
+			
+			if restraint_energy != math.inf:
+				total_energy += restraint_energy
 
 		return total_energy
