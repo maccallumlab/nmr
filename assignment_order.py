@@ -1,6 +1,6 @@
 import numpy as np
 
-class Assignment_order():
+class FracAct():
 
     def __init__(self, num_resid, noes):
         self.num_resid = num_resid # value would need to be the number of shifts/atoms
@@ -32,6 +32,21 @@ class Assignment_order():
             assign_order.append(np.argmax(temp2)) # append the max value's index (takes first occurence if equivalent)
 
         return assign_order
-
-
     
+    # intermediate check for first set of probabilites assigned - not used as final calculation
+    def fractional_activation_summation(self):
+
+        assign_order = []
+        for j in range(self.num_resid):
+            temp2 = []
+            for i in range(self.num_resid):
+                temp =  0
+                for noe in self.noes:
+                    temp += activation_loop(i, noe, assign_order)
+                temp2.append(temp)
+
+            return temp2
+
+
+
+

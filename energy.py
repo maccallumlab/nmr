@@ -101,7 +101,7 @@ class Energy():
 			restraint_energy = math.inf
 			activated = True
 			for i, j in restraint:
-				if i not in assignments.values() or j not in assignments.values():
+				if i not in assignments.keys() or j not in assignments.keys():
 					activated = False
 					break
 
