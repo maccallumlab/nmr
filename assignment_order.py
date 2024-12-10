@@ -19,17 +19,44 @@ class FracAct():
         else:
             return 0
 
+    # def fractional_activation(self):
+    #     assign_order = []
+    #     for j in range(self.num_resid): # I don't know why I need this loop here it just makes it work
+    #         temp2 = []
+    #         for i in range(self.num_resid):
+    #             temp =  0
+    #             for noe in self.noes:
+    #                 temp += self.activation_loop(i, noe, assign_order) # sum up the probabilities for 'i' (the given shift target)
+    #             temp2.append(temp)
+
+    #         assign_order.append(np.argmax(temp2)) # append the max value's index (takes first occurence if equivalent)
+
+    #     return assign_order
     def fractional_activation(self):
         assign_order = []
-        for j in range(self.num_resid): # I don't know why I need this loop here it just makes it work
+        missing_shifts = []
+
+        while len(assign_order) < self.num_resid:
             temp2 = []
             for i in range(self.num_resid):
-                temp =  0
+                temp = 0
                 for noe in self.noes:
                     temp += self.activation_loop(i, noe, assign_order) # sum up the probabilities for 'i' (the given shift target)
+                
+                # identifies any missing shifts
+                if temp == 0 and len(assign_order) == 0:
+                    missing_shifts.append(i)
+                
+                # appends sum to list (one sum per shift)
                 temp2.append(temp)
 
-            assign_order.append(np.argmax(temp2)) # append the max value's index (takes first occurence if equivalent)
+            # makes sure extra zeros are not added during final iterations (if shifts are missing)
+            if any(temp2) == True:
+                # proper order based on max value
+                assign_order.append(np.argmax(temp2))
+            else:
+                # add missing shifts to end of list
+                assign_order = assign_order + missing_shifts
 
         return assign_order
     
