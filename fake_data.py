@@ -95,16 +95,21 @@ def generate_data(num_resid):
 
     return coords, actual_shifts, predicted_shifts, noes
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('num_resid', type=int, help='Number of residues')
-    args = parser.parse_args()
+# if __name__ == '__main__':
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument('num_resid', type=int, help='Number of residues')
+#     args = parser.parse_args()
 
-    num_resid = args.num_resid
-    # These should be grouped to export into an environment
-    coords, actual_shifts, predicted_shifts, noes = generate_data(num_resid)
-    
-    # energy_obj = Energy(coords, actual_shifts, noes)
-    # test = energy_obj.setup_noe_restraints()
+#     num_resid = args.num_resid
+#     # These should be grouped to export into an environment
+#     coords, actual_shifts, predicted_shifts, noes = generate_data(num_resid)
+#     print(f'coords {(np.array(coords)).tolist()}\n shifts{(np.array(actual_shifts)).tolist()}\n noes{(np.array(noes)).tolist()}')
+#     # print(actual_shifts)
+#     # print(noes)
+
+
+#     energy_obj = Energy(coords, actual_shifts, noes)
+#     test = energy_obj.setup_noe_restraints()
+#     print(test)
     # test_energy = energy_obj.energy_loop(test)
     # print(test_energy)

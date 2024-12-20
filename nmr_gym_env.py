@@ -28,6 +28,7 @@ class GymEnv(gym.Env):
         self.state = state
         frac_act = FracAct(self.num_resid, self.state['restraints'])
         self.assign_order = frac_act.fractional_activation()
+        print(self.assign_order)
         return self.state
 
     def reset(self):
@@ -61,34 +62,34 @@ class GymEnv(gym.Env):
 
     def step(self, action):
         
+        energy = Energy(self.state['coords'], self.state['actual_shifts'], self.state['noes'])
+
+        # add action to assignments
+        self.assignments[(self.assign_order[self.assign_step])] = action
+        print(self.assignments)
+
+        # calc energy and store temporarily
+        temp_intermediate_energy = energy.get_energy(self.state['restraints'], self.assignments)
+        # print(f'this is the temp energy {temp_intermediate_energy}')
+
+        # calc reward based on previous energy and temporary energy (+ve means energy went down, -ve means energy went up)
+        self.reward = (self.intermediate_energy - temp_intermediate_energy) #if self.intermediate_energy != 0 else 0
+        # print(f'this is the reward {self.reward}')
+
+        # store energy as intermediate
+        self.intermediate_energy = temp_intermediate_energy
+
+        # assign intermediate energy as running total
+        self.state['total_energy'] = self.intermediate_energy
+        print(f"Running energy = {self.state['total_energy']}, Current reward = {self.reward}")
+
+        self.assign_step += 1
         terminated = True if len(self.assignments) == self.num_resid else False
-
+    
         if terminated:
-            # how to represent final reward?
+            print(f"Final assignments (shift:atom) = {self.assignments}\nFinal energy evaluation = {self.state['total_energy']}")
             return self.state, self.reward, terminated
-        
         else:
-            energy = Energy(self.state['coords'], self.state['actual_shifts'], self.state['noes'])
-
-            # add action to assignments
-            self.assignments[(self.assign_order[self.assign_step])] = action
-            print(self.assignments)
-
-            # calc energy and store temporarily
-            temp_intermediate_energy = energy.get_energy(self.state['restraints'], self.assignments)
-            # print(f'this is the temp energy {temp_intermediate_energy}')
-
-            # calc reward based on previous energy and temporary energy (+ve means energy went down, -ve means energy went up)
-            self.reward = (self.intermediate_energy - temp_intermediate_energy) #if self.intermediate_energy != 0 else 0
-            # print(f'this is the reward {self.reward}')
-
-            # store energy as intermediate
-            self.intermediate_energy = temp_intermediate_energy
-
-            # assign intermediate energy as running total
-            self.state['total_energy'] = self.intermediate_energy
-            print(f"Running energy = {self.state['total_energy']}, Current reward = {self.reward}")
-
-            self.assign_step += 1
-
             return self.state, self.reward, terminated
+    
+        
