@@ -3,8 +3,7 @@ from itertools import product
 from typing import NamedTuple
 import random
 import argparse
-
-from energy import Energy
+import pickle
 
 class HSQCPeak(NamedTuple):
     H1: float
@@ -19,6 +18,8 @@ class Protein(NamedTuple):
     x: float
     y: float
     z: float
+    H1: float
+    N15: float
 
 # Sampled points from unit square/cube
 def sample_unit(n, num_sides, min=0, max=1):
@@ -36,11 +37,11 @@ def add_noise(point, scale=0.1, min=0, max=1):
 
     # fold over points outside of boundaries 
     for point in noisy_point:
-        for value in point:
+        for i, value in enumerate(point):
             if max < value:
-                value = (max-(value-max))
-            elif value < min:
-                value = (min-value)
+                point[i] = (max-(value-max))
+            if value < min:
+                point[i] = (min-value)
 
     return noisy_point
 
@@ -49,11 +50,14 @@ def calc_dist(p1, p2):
 
 def distance_noe(protein, shifts, cutoff):
     """
-    Grabs close coordinates and 'associated' HSQC shift peaks (by same index) to create NOES.
-    Adds gaussian noise to all points.
+    Grabs close coordinates and 'associated' HSQC shift peaks (randomized index) to create NOES.
+    Predicted shifts assigned as the new randomized shift order - this order is associated with the coordinate order (ie. the answer key).
+    Adds gaussian noise to all points at the end.
 
     **Can end up with no NOEs depending on the cutoff**
     """
+    randomized_shifts = np.random.permutation(shifts)
+
     noes = []
 
     for i, atom1 in enumerate(protein):
@@ -62,15 +66,30 @@ def distance_noe(protein, shifts, cutoff):
                 dist = calc_dist(atom1, atom2)
                 if dist < cutoff:
                     # print(dist, shifts[i], shifts[j])
-                    noe = list(shifts[i][:]) # H1, N1
-                    noe.append(shifts[j][0]) # H2
+                    # noe = list(shifts[i][:]) # H1, N1
+                    # noe.append(shifts[j][0]) # H2
+                    noe = list(randomized_shifts[i][:])
+                    noe.append(randomized_shifts[j][0])
                     noes.append(noe)
 
     noisy_noe = add_noise(np.array(noes), scale=0.01)
+    predicted_shifts = add_noise(np.array(randomized_shifts), scale=0.1)
 
-    return noisy_noe
+    return noisy_noe, predicted_shifts
 
-def generate_data(num_resid):
+def close_contacts(protein, cutoff):
+    contacts = []
+
+    for i, atom1 in enumerate(protein):
+        for j, atom2 in enumerate(protein):
+            if i != j:
+                dist = calc_dist(atom1, atom2)
+                if dist < cutoff:
+                    contacts.append((i,j))
+
+    return contacts
+
+def generate_data(num_resid, pickle_data=True, example=True):
     """
     Generates all fake data and orders it in lists of namedtuples.
     """
@@ -78,38 +97,43 @@ def generate_data(num_resid):
     protein = sample_unit(num_resid, num_sides=3)
     # "Actual" shifts [H1,N1]
     actual_shifts = sample_unit(num_resid, num_sides=2)
-    # Predicted shifts [H1,N1]
-    predicted_shifts = add_noise(actual_shifts)
-    # NOES [H1,N1,H2]
-    noes = distance_noe(protein, actual_shifts, cutoff=0.5) # likely need to change dist cutoff and only accounting for actual_shifts right now
+    # NOES [H1,N1,H2] and predicted shifts [H1,N1]
+    noes, predicted_shifts = distance_noe(protein, actual_shifts, cutoff=0.5)
 
     # Lists of namedtuples (one object per residue)
-    coords = [Protein(x=resid[0], y=resid[1], z=resid[2]) for resid in protein]
+    coords = [Protein(x=resid[0], y=resid[1], z=resid[2], H1=shift[0], N15=shift[1]) for resid, shift in zip(protein, predicted_shifts)]
     actual_shifts = [HSQCPeak(H1=shift[0], N15=shift[1]) for shift in actual_shifts]
-    predicted_shifts = [HSQCPeak(H1=shift[0], N15=shift[1]) for shift in predicted_shifts]
     noes = [NOEPeak(H1=shift[0], N15=shift[1], H2=shift[2]) for shift in noes]
 
-    # print(coords)
-    # print(actual_shifts)
-    # print(noe)
+    if pickle_data:
+        name = f'fakedata_r{num_resid}.pkl' if example else f'current_run.pkl'
 
-    return coords, actual_shifts, predicted_shifts, noes
+        with open(name, 'wb') as f:
+            pickle.dump(coords, f)
+            pickle.dump(actual_shifts, f)
+            pickle.dump(noes, f)
+
+    else:
+        return coords, actual_shifts, noes
 
 # if __name__ == '__main__':
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument('num_resid', type=int, help='Number of residues')
-#     args = parser.parse_args()
+# parser = argparse.ArgumentParser()
+# parser.add_argument('num_resid', type=int, help='Number of residues')
+# args = parser.parse_args()
 
-#     num_resid = args.num_resid
+# num_resid = args.num_resid
+# generate_data(num_resid)
+
 #     # These should be grouped to export into an environment
 #     coords, actual_shifts, predicted_shifts, noes = generate_data(num_resid)
-#     print(f'coords {(np.array(coords)).tolist()}\n shifts{(np.array(actual_shifts)).tolist()}\n noes{(np.array(noes)).tolist()}')
-#     # print(actual_shifts)
-#     # print(noes)
+    # print(f'coords {(np.array(coords)).tolist()}')#\n shifts{(np.array(actual_shifts)).tolist()}\n noes{(np.array(noes)).tolist()}')
+    # # print(actual_shifts)
+    # # print(noes)
 
-
-#     energy_obj = Energy(coords, actual_shifts, noes)
-#     test = energy_obj.setup_noe_restraints()
-#     print(test)
-    # test_energy = energy_obj.energy_loop(test)
+    # energy_obj = Energy(coords, actual_shifts, noes)
+    # test = energy_obj.setup_noe_restraints()
+    # # print(test)
+    # # print(coords)
+        
+    # test_energy = energy_obj.get_total_energy(test, {0:2, 1:1, 2:0})
     # print(test_energy)

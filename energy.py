@@ -28,7 +28,7 @@ def matchNH(hshift, nshift, hsqc, tolerance_h, tolerance_n):
 
     return nh_index
 
-def noe_combinations(noes, actual_shifts, tolerance_h=0.2, tolerance_n=0.2):
+def noe_combinations(noes, actual_shifts, tolerance_h=0.02, tolerance_n=0.02):
     """
     Loops through the NOES to match the H1, N1 and H2 shifts to two HSQC shifts.
     Lists the HSQC shifts separately (H1/N1 as contact1 and H2 as contact2) for each NOE.
@@ -96,7 +96,7 @@ class Energy():
         restraint_energy = math.inf
         for i, j in restraint:
             k, l = assignments.get(i), assignments.get(j)
-            dist = np.linalg.norm((np.array(self.coords[k]) - np.array(self.coords[l])))
+            dist = np.linalg.norm((np.array(self.coords[k][:3]) - np.array(self.coords[l][:3])))
             energy_value = self.flat_bottom(dist, tolerance=0.5)
             restraint_energy = energy_value if energy_value < restraint_energy else restraint_energy
         return restraint_energy
@@ -124,7 +124,10 @@ class Energy():
 
         total_energy = 0
         for restraint in restraints:
-            energy_value = self.noe_activation(assignments, restraint)
-            total_energy += energy_value
+            if restraint == []:
+                pass
+            else:
+                energy_value = self.noe_activation(assignments, restraint)
+                total_energy += energy_value
 
         return total_energy
