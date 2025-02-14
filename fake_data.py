@@ -21,6 +21,11 @@ class Protein(NamedTuple):
     H1: float
     N15: float
 
+class Connectivity(NamedTuple):
+    atom1: float
+    atom2: float
+    distance: float
+
 # Sampled points from unit square/cube
 def sample_unit(n, num_sides, min=0, max=1):
     return np.random.uniform(min, max, size=(n, num_sides))
@@ -89,6 +94,18 @@ def close_contacts(protein, cutoff):
 
     return contacts
 
+def connectivity_data(protein, cutoff):
+    connectivity = []
+    
+    for i, atom1 in enumerate(protein):
+      for j, atom2 in enumerate(protein):
+        if i != j:
+            dist = calc_dist(atom1, atom2) #dist = np.linalg.norm(atom1 - atom2)
+            if dist < cutoff:
+                connectivity.append((atom1, atom2, dist))
+
+    return connectivity
+
 def generate_data(num_resid, pickle_data=True, example=True):
     """
     Generates all fake data and orders it in lists of namedtuples.
@@ -99,11 +116,14 @@ def generate_data(num_resid, pickle_data=True, example=True):
     actual_shifts = sample_unit(num_resid, num_sides=2)
     # NOES [H1,N1,H2] and predicted shifts [H1,N1]
     noes, predicted_shifts = distance_noe(protein, actual_shifts, cutoff=0.5)
+    # connectivity [atom1,atom2,dist]
+    connectivity = connectivity_data(protein, cutoff=0.5)
 
     # Lists of namedtuples (one object per residue)
     coords = [Protein(x=resid[0], y=resid[1], z=resid[2], H1=shift[0], N15=shift[1]) for resid, shift in zip(protein, predicted_shifts)]
     actual_shifts = [HSQCPeak(H1=shift[0], N15=shift[1]) for shift in actual_shifts]
     noes = [NOEPeak(H1=shift[0], N15=shift[1], H2=shift[2]) for shift in noes]
+    connectivity = [Connectivity(atom1=connect[0], atom2=connect[1], distance=connect[2]) for connect in connectivity]
 
     if pickle_data:
         name = f'fakedata_r{num_resid}.pkl' if example else f'current_run.pkl'
@@ -112,9 +132,10 @@ def generate_data(num_resid, pickle_data=True, example=True):
             pickle.dump(coords, f)
             pickle.dump(actual_shifts, f)
             pickle.dump(noes, f)
+            pickle.dump(connectivity, f)
 
     else:
-        return coords, actual_shifts, noes
+        return coords, actual_shifts, noes, connectivity
 
 # if __name__ == '__main__':
 # parser = argparse.ArgumentParser()
