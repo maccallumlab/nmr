@@ -18,6 +18,7 @@ class GymEnv(gym.Env):
 
         self.assignments = {}
         self.assign_step = 0
+        self.assign_shift = 0
         self.total_energy = 0.0
         self.intermediate_energy = 0.0
         self.reward = 0.0
@@ -51,6 +52,7 @@ class GymEnv(gym.Env):
                 coords = pickle.load(f)
                 actual_shifts = pickle.load(f)
                 noes = pickle.load(f)
+                connectivity = pickle.load(f)
         else:
             generate_data(self.num_resid, pickle_data=pickle_data, example=example)
             pickle_file = glob.glob(name)
@@ -58,23 +60,27 @@ class GymEnv(gym.Env):
                 coords = pickle.load(f)
                 actual_shifts = pickle.load(f)
                 noes = pickle.load(f)
+                connectivity = pickle.load(f)
 
         # get restraints
         restraints = noe_combinations(noes, actual_shifts)
 
         # get plot of shifts and restraints
-        plot_shifts(actual_shifts, restraints, coords, named_tuple_used=True)
+        plot_shifts(actual_shifts, restraints, coords, connectivity, named_tuple_used=True)
+
+        self.assignments = {}
+        self.assign_step = 0
+        self.assign_shift = 0
+        self.total_energy = 0.0
+        self.intermediate_energy = 0.0
+        self.reward = 0.0
 
         # get assignment order 
         frac_act = FracAct(self.num_resid, restraints)
         self.assign_order = frac_act.fractional_activation()
+        self.assign_shift = self.assign_order[self.assign_step]
         print(self.assign_order)
-
-        self.assignments = {}
-        self.assign_step = 0
-        self.total_energy = 0.0
-        self.intermediate_energy = 0.0
-        self.reward = 0.0
+        print(f'Shift to be assigned: {self.assign_shift}')
 
         self.state = {
             "coords": coords,
@@ -100,8 +106,8 @@ class GymEnv(gym.Env):
         # print(f'this is the temp energy {temp_intermediate_energy}')
 
         # calc reward based on previous energy and temporary energy 
-        # before correction, +ve means energy went down - we DO NOT want this, -ve means energy went up
         self.state['reward'] = (self.intermediate_energy - temp_intermediate_energy)
+        # before correction, +ve means energy went down - we DO NOT want this, -ve means energy went up
         assert self.state['reward'] <= 0
         self.state['reward'] = abs(self.state['reward'])
         # print(f'this is the reward {self.reward}')
@@ -114,12 +120,16 @@ class GymEnv(gym.Env):
         print(f"Running energy = {self.state['total_energy']}, Current reward = {self.state['reward']}")
 
         self.assign_step += 1
+        # self.assign_shift = self.assign_order[self.assign_step]
         terminated = True if len(self.assignments) == self.num_resid else False
     
         if terminated:
             print(f"Final assignments (shift:atom) = {self.assignments}\nFinal energy evaluation = {self.state['total_energy']}")
             return self.state, self.state['reward'], terminated, self.state['total_energy']
-        else:
+        
+        self.assign_shift = self.assign_order[self.assign_step]
+        if not terminated:
+            print(f'Shift to be assigned: {self.assign_shift}')
             return self.state, self.state['reward'], terminated, self.state['total_energy']
     
         

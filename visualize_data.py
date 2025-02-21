@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.mplot3d import Axes3D
 
-def get_data(actual_shifts, coords, named_tuple_used=True):
+def get_data(actual_shifts, coords, connectivity, named_tuple_used=True):
     if named_tuple_used:
         # Actual
         actual_x = [shift.H1 for shift in actual_shifts]
@@ -11,6 +11,8 @@ def get_data(actual_shifts, coords, named_tuple_used=True):
         # Predicted
         predict_x = [shift.H1 for shift in coords]
         predict_y = [shift.N15 for shift in coords]
+        # Connectivity
+        contacts = [(contact.atom1, contact.atom2) for contact in connectivity]
 
     else:
         # Actual
@@ -20,7 +22,7 @@ def get_data(actual_shifts, coords, named_tuple_used=True):
         predict_x = [shift[3] for shift in coords]
         predict_y = [shift[4] for shift in coords]
     
-    return actual_x, actual_y, predict_x, predict_y
+    return actual_x, actual_y, predict_x, predict_y, contacts
 
 # def new_plot(coords):
 
@@ -44,24 +46,23 @@ def get_data(actual_shifts, coords, named_tuple_used=True):
 #     plt.show()
 #     #plt.savefig("coord_plot.png", dpi = 150)
 
-def close_contacts(coords, cutoff=0.37):
-    """
-    Calculates close contacts based on coordinates.
-    """
-    contacts = []
+# def close_contacts(coords, cutoff=0.37):
+#     """
+#     Calculates close contacts based on coordinates.
+#     """
+#     contacts = []
 
-    for i, atom1 in enumerate(coords):
-        for j, atom2 in enumerate(coords):
-            if i != j:
-                dist = np.linalg.norm((np.array(atom1[:3]) - np.array(atom2[:3])))
-                if dist < cutoff:
-                    contacts.append((i,j))
+#     for i, atom1 in enumerate(coords):
+#         for j, atom2 in enumerate(coords):
+#             if i != j:
+#                 dist = np.linalg.norm((np.array(atom1[:3]) - np.array(atom2[:3])))
+#                 if dist < cutoff:
+#                     contacts.append((i,j))
+#     return contacts
 
-    return contacts
+def plot_shifts(actual_shifts, restraints, coords, connectivity, named_tuple_used=True):
 
-def plot_shifts(actual_shifts, restraints, coords, named_tuple_used=True):
-
-    actual_x, actual_y, predict_x, predict_y = get_data(actual_shifts, coords, named_tuple_used=named_tuple_used)
+    actual_x, actual_y, predict_x, predict_y, contacts = get_data(actual_shifts, coords, connectivity, named_tuple_used=named_tuple_used)
 
     plt.scatter(predict_x, predict_y, color='blue', label='Predicted shifts')
 
@@ -78,7 +79,6 @@ def plot_shifts(actual_shifts, restraints, coords, named_tuple_used=True):
             plt.plot((actual_x[j], actual_x[k]), (actual_y[j], actual_y[k]), color='red')
     
     # Draw close contacts
-    contacts = close_contacts(coords)
     for i,j in contacts:
         plt.plot((predict_x[i], predict_x[j]), (predict_y[i], predict_y[j]), color='blue', ls='dotted', alpha=0.5)
 

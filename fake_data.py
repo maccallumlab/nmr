@@ -61,7 +61,8 @@ def distance_noe(protein, shifts, cutoff):
 
     **Can end up with no NOEs depending on the cutoff**
     """
-    randomized_shifts = np.random.permutation(shifts)
+    # Can use this to randomize - not required
+    # shifts = np.random.permutation(shifts)
 
     noes = []
 
@@ -71,38 +72,27 @@ def distance_noe(protein, shifts, cutoff):
                 dist = calc_dist(atom1, atom2)
                 if dist < cutoff:
                     # print(dist, shifts[i], shifts[j])
-                    # noe = list(shifts[i][:]) # H1, N1
-                    # noe.append(shifts[j][0]) # H2
-                    noe = list(randomized_shifts[i][:])
-                    noe.append(randomized_shifts[j][0])
+                    noe = list(shifts[i][:]) # H1, N1
+                    noe.append(shifts[j][0]) # H2
                     noes.append(noe)
 
     noisy_noe = add_noise(np.array(noes), scale=0.01)
-    predicted_shifts = add_noise(np.array(randomized_shifts), scale=0.1)
+    predicted_shifts = add_noise(np.array(shifts), scale=0.1)
 
     return noisy_noe, predicted_shifts
 
-def close_contacts(protein, cutoff):
-    contacts = []
-
-    for i, atom1 in enumerate(protein):
-        for j, atom2 in enumerate(protein):
-            if i != j:
-                dist = calc_dist(atom1, atom2)
-                if dist < cutoff:
-                    contacts.append((i,j))
-
-    return contacts
-
 def connectivity_data(protein, cutoff):
+    """
+    Calculates close contacts based on coordinates.
+    """
     connectivity = []
     
     for i, atom1 in enumerate(protein):
-      for j, atom2 in enumerate(protein):
-        if i != j:
-            dist = calc_dist(atom1, atom2) #dist = np.linalg.norm(atom1 - atom2)
-            if dist < cutoff:
-                connectivity.append((atom1, atom2, dist))
+        for j, atom2 in enumerate(protein):
+            if i != j:
+                dist = calc_dist(atom1, atom2) #dist = np.linalg.norm(atom1 - atom2)
+                if dist < cutoff:
+                    connectivity.append((i, j, dist))
 
     return connectivity
 
@@ -117,7 +107,7 @@ def generate_data(num_resid, pickle_data=True, example=True):
     # NOES [H1,N1,H2] and predicted shifts [H1,N1]
     noes, predicted_shifts = distance_noe(protein, actual_shifts, cutoff=0.5)
     # connectivity [atom1,atom2,dist]
-    connectivity = connectivity_data(protein, cutoff=0.5)
+    connectivity = connectivity_data(protein, cutoff=0.37)
 
     # Lists of namedtuples (one object per residue)
     coords = [Protein(x=resid[0], y=resid[1], z=resid[2], H1=shift[0], N15=shift[1]) for resid, shift in zip(protein, predicted_shifts)]
