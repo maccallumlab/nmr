@@ -77,9 +77,10 @@ def distance_noe(protein, shifts, cutoff):
                     noes.append(noe)
 
     noisy_noe = add_noise(np.array(noes), scale=0.01)
-    predicted_shifts = add_noise(np.array(shifts), scale=0.1)
+    # predicted_shifts = add_noise(np.array(shifts), scale=0.1)
 
-    return noisy_noe, predicted_shifts
+    # return noisy_noe, predicted_shifts
+    return noisy_noe
 
 def connectivity_data(protein, cutoff):
     """
@@ -96,33 +97,55 @@ def connectivity_data(protein, cutoff):
 
     return connectivity
 
-def generate_data(num_resid, pickle_data=True, example=True):
+def generate_raw_data(num_resid):
     """
-    Generates all fake data and orders it in lists of namedtuples.
+    Generates all qualities of the system as individual arrays.
     """
     # 3D structure [x,y,z]
     protein = sample_unit(num_resid, num_sides=3)
     # "Actual" shifts [H1,N1]
     actual_shifts = sample_unit(num_resid, num_sides=2)
+    # Predicted shifts [H1,N1]
+    predicted_shifts = add_noise(actual_shifts, scale=0.1)
     # NOES [H1,N1,H2] and predicted shifts [H1,N1]
-    noes, predicted_shifts = distance_noe(protein, actual_shifts, cutoff=0.5)
+    noes = distance_noe(protein, actual_shifts, cutoff=0.5)
     # connectivity [atom1,atom2,dist]
     connectivity = connectivity_data(protein, cutoff=0.37)
 
-    # Lists of namedtuples (one object per residue)
+    return protein, actual_shifts, predicted_shifts, noes, connectivity
+
+def order_data(protein, actual_shifts, predicted_shifts, noes, connectivity):
+    """
+    Compiles data in a list of named tuples with one object per residue.
+    """
     coords = [Protein(x=resid[0], y=resid[1], z=resid[2], H1=shift[0], N15=shift[1]) for resid, shift in zip(protein, predicted_shifts)]
     actual_shifts = [HSQCPeak(H1=shift[0], N15=shift[1]) for shift in actual_shifts]
     noes = [NOEPeak(H1=shift[0], N15=shift[1], H2=shift[2]) for shift in noes]
     connectivity = [Connectivity(atom1=connect[0], atom2=connect[1], distance=connect[2]) for connect in connectivity]
 
-    if pickle_data:
-        name = f'fakedata_r{num_resid}.pkl' if example else f'current_run.pkl'
+    return coords, actual_shifts, noes, connectivity
 
-        with open(name, 'wb') as f:
-            pickle.dump(coords, f)
-            pickle.dump(actual_shifts, f)
-            pickle.dump(noes, f)
-            pickle.dump(connectivity, f)
+def save_as_pickle(coords, actual_shifts, noes, connectivity, num_resid, example=True):
+    """
+    Saves data to disk. Run is given a proper name if used as a saved example. 
+    """
+    name = f'fakedata_r{num_resid}.pkl' if example else f'current_run.pkl'
+
+    with open(name, 'wb') as f:
+        pickle.dump(coords, f)
+        pickle.dump(actual_shifts, f)
+        pickle.dump(noes, f)
+        pickle.dump(connectivity, f)
+
+def generate_data(num_resid, pickle_data=True, example=True):
+    """
+    Generates all fake data, orders it in lists of namedtuples, and pickles if required.
+    """
+    protein, actual_shifts, predicted_shifts, noes, connectivity = generate_raw_data(num_resid)
+    coords, actual_shifts, noes, connectivity = order_data(protein, actual_shifts, predicted_shifts, noes, connectivity)
+
+    if pickle_data:
+        save_as_pickle(coords, actual_shifts, noes, connectivity, num_resid, example=example)
 
     else:
         return coords, actual_shifts, noes, connectivity

@@ -3,6 +3,7 @@ import math
 import argparse
 
 from nmr_gym_env import GymEnv
+from visualize_data import plot_shifts
 
 if __name__ == '__main__':
     
@@ -19,10 +20,10 @@ if __name__ == '__main__':
 
         ###### Available options to work with right now ######
 
-        # 1. Need to generate and save an example? Saved in all instances as fakedata_r{resid_num}.pkl
+        # 1. Need to generate and save an example? Saved in all instances as fakedata_r{num_resid}.pkl
         # observation = gym_env.reset(pickled=False, pickle_data=True)
 
-        # 2. Grab one of these previous example? Make sure example exists, with desired resid number.
+        # 2. Grab one of these previous examples? Make sure example exists with desired resid number.
         # observation = gym_env.reset(pickled=True, pickle_data=False)
 
         # 3. Run a new example? Saved in all instances as current_run.pkl
@@ -34,13 +35,11 @@ if __name__ == '__main__':
         ######################################################
 
         terminated = False
-        action_assigned = []
 
         while not terminated:
             action = int(input())
             if action < num_resid:
-                if action not in action_assigned:
-                    action_assigned.append(action)
+                if action not in observation['assignments'].values():
                     observation, reward, terminated, total_energy = gym_env.step(action)
 
 # random generated set of 4
