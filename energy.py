@@ -131,3 +131,16 @@ class Energy():
                 total_energy += energy_value
 
         return total_energy
+    
+    def value_to_go(self, restraints, answer, energy):
+        """
+        Calculates energy difference from current to final energy state.
+        """
+        total_energy = self.get_total_energy(restraints, answer)
+        
+        return total_energy - energy
+    
+    def transform_energy(self, energy):
+        return np.log((energy + 1))
+
+        
