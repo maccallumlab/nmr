@@ -7,10 +7,9 @@ def perturb_data(coords):
     Adds noise to original fake data and generates new 'actual' shifts based on predicted shifts.
     """
     protein = add_noise(np.array(coords)[:, :3], scale=0.1)
-    predicted_shifts = add_noise(np.array(coords)[:, 3:], scale=0.1)
     actual_fake_shifts = add_noise(np.array(coords)[:, 3:], scale=0.1)
 
-    return protein, predicted_shifts, actual_fake_shifts
+    return protein, actual_fake_shifts
 
 def weighted_error(num_resid, scale=1):
     """
@@ -51,8 +50,8 @@ def generate_history(original, history_length=5):
     history = []
 
     for i in range(history_length):
-        protein, predicted_shifts, actual_shifts = perturb_data(original['coords'])
-        noes = distance_noe(protein, actual_shifts, cutoff=0.5)
+        protein, actual_shifts = perturb_data(original['coords'])
+        noes, predicted_shifts = distance_noe(protein, actual_shifts, cutoff=0.5)
         connectivity = connectivity_data(protein, cutoff=0.37)
 
         coords, actual_shifts, noes, connectivity = order_data(protein, actual_shifts, predicted_shifts, noes, connectivity)

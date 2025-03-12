@@ -21,13 +21,13 @@ if __name__ == '__main__':
         ###### Available options to work with right now ######
 
         # 1. Need to generate and save an example? Saved in all instances as fakedata_r{num_resid}.pkl
-        # observation = gym_env.reset(pickled=False, pickle_data=True)
+        # observation = gym_env.reset(pickled=False, pickle_data=True, random_key=True)
 
         # 2. Grab one of these previous examples? Make sure example exists with desired resid number.
-        # observation = gym_env.reset(pickled=True, pickle_data=False)
+        # observation = gym_env.reset(pickled=True, pickle_data=False, random_key=True)
 
         # 3. Run a new example? Saved in all instances as current_run.pkl
-        observation = gym_env.reset(pickled=False, pickle_data=True, example=False)
+        observation = gym_env.reset(pickled=False, pickle_data=True, example=False, random_key=True)
 
         # 4. Use a custom hardcoded state? May be some issues with data types and visualization.
         # observation = gym_env.custom_state(state)

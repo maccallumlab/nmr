@@ -53,16 +53,16 @@ def add_noise(point, scale=0.1, min=0, max=1):
 def calc_dist(p1, p2):
     return np.linalg.norm((p2-p1))
 
-def distance_noe(protein, shifts, cutoff):
+def distance_noe(protein, shifts, cutoff=0.5, random_key=False):
     """
-    Grabs close coordinates and 'associated' HSQC shift peaks (randomized index) to create NOES.
-    Predicted shifts assigned as the new randomized shift order - this order is associated with the coordinate order (ie. the answer key).
+    Grabs close coordinates and 'associated' HSQC shift peaks (randomized index or 1:1 correlation) to create NOES.
+    Predicted shifts assigned as shift order - this order is associated with the coordinate order if randomized (ie. the answer key).
     Adds gaussian noise to all points at the end.
 
     **Can end up with no NOEs depending on the cutoff**
     """
-    # Can use this to randomize - not required
-    # shifts = np.random.permutation(shifts)
+    if random_key:
+        shifts = np.random.permutation(shifts)
 
     noes = []
 
@@ -71,16 +71,16 @@ def distance_noe(protein, shifts, cutoff):
             if i != j:
                 dist = calc_dist(atom1, atom2)
                 if dist < cutoff:
-                    # print(dist, shifts[i], shifts[j])
+                    #print(dist, shifts[i], shifts[j])
                     noe = list(shifts[i][:]) # H1, N1
                     noe.append(shifts[j][0]) # H2
                     noes.append(noe)
 
+    
     noisy_noe = add_noise(np.array(noes), scale=0.01)
-    # predicted_shifts = add_noise(np.array(shifts), scale=0.1)
-
-    # return noisy_noe, predicted_shifts
-    return noisy_noe
+    predicted_shifts = add_noise(np.array(shifts), scale=0.1)
+    
+    return noisy_noe, predicted_shifts
 
 def connectivity_data(protein, cutoff):
     """
@@ -97,7 +97,7 @@ def connectivity_data(protein, cutoff):
 
     return connectivity
 
-def generate_raw_data(num_resid):
+def generate_raw_data(num_resid, random_key):
     """
     Generates all qualities of the system as individual arrays.
     """
@@ -105,12 +105,10 @@ def generate_raw_data(num_resid):
     protein = sample_unit(num_resid, num_sides=3)
     # "Actual" shifts [H1,N1]
     actual_shifts = sample_unit(num_resid, num_sides=2)
-    # Predicted shifts [H1,N1]
-    predicted_shifts = add_noise(actual_shifts, scale=0.1)
     # NOES [H1,N1,H2] and predicted shifts [H1,N1]
-    noes = distance_noe(protein, actual_shifts, cutoff=0.5)
+    noes, predicted_shifts = distance_noe(protein, actual_shifts, cutoff=float(1/np.cbrt(num_resid)), random_key=random_key)
     # connectivity [atom1,atom2,dist]
-    connectivity = connectivity_data(protein, cutoff=0.37)
+    connectivity = connectivity_data(protein, cutoff=float(0.8/np.cbrt(num_resid))) #0.37
 
     return protein, actual_shifts, predicted_shifts, noes, connectivity
 
@@ -137,11 +135,11 @@ def save_as_pickle(coords, actual_shifts, noes, connectivity, num_resid, example
         pickle.dump(noes, f)
         pickle.dump(connectivity, f)
 
-def generate_data(num_resid, pickle_data=True, example=True):
+def generate_data(num_resid, pickle_data=True, example=True, random_key=False):
     """
     Generates all fake data, orders it in lists of namedtuples, and pickles if required.
     """
-    protein, actual_shifts, predicted_shifts, noes, connectivity = generate_raw_data(num_resid)
+    protein, actual_shifts, predicted_shifts, noes, connectivity = generate_raw_data(num_resid, random_key=random_key)
     coords, actual_shifts, noes, connectivity = order_data(protein, actual_shifts, predicted_shifts, noes, connectivity)
 
     if pickle_data:

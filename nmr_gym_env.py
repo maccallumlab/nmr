@@ -31,8 +31,9 @@ class GymEnv(gym.Env):
             "coords": spaces.Box(0, 1, shape=(self.num_resid, 5), dtype=np.float32),
             "actual_shifts": spaces.Box(0, 1, shape=(self.num_resid, 2), dtype=np.float32),
             "noes": spaces.Box(0, 1, shape=(self.num_resid, 3), dtype=np.float32),
-            "assignments": spaces.Box(0, num_resid, shape=(self.num_resid, 3), dtype=np.float32),
-            "assign_order": spaces.Box(0, num_resid, shape=(self.num_resid, 1), dtype=np.float32),
+            "assignments": spaces.Box(0, self.num_resid, shape=(self.num_resid, 3), dtype=np.float32),
+            "assign_order": spaces.Box(0, self.num_resid, shape=(self.num_resid, 1), dtype=np.float32),
+            "assign_shift": spaces.Discrete(self.num_resid),
             "total_energy": spaces.Box(0, math.inf, shape=(1, 1), dtype=np.float32),
             "reward": spaces.Box(0, math.inf, shape=(1, 1), dtype=np.float32)
         })
@@ -48,7 +49,7 @@ class GymEnv(gym.Env):
 
         return self.state
 
-    def reset(self, pickled=False, pickle_data=True, example=True):
+    def reset(self, pickled=False, pickle_data=True, example=True, random_key=False):
 
         name = f"./*{self.num_resid}.pkl" if example else "./current_run.pkl"
 
@@ -61,7 +62,7 @@ class GymEnv(gym.Env):
                 connectivity = pickle.load(f)
 
         elif pickle_data:
-            generate_data(self.num_resid, pickle_data=pickle_data, example=example)
+            generate_data(self.num_resid, pickle_data=pickle_data, example=example, random_key=random_key)
             pickle_file = glob.glob(name)
             with open(pickle_file[0], 'rb') as f:
                 coords = pickle.load(f)
@@ -70,10 +71,10 @@ class GymEnv(gym.Env):
                 connectivity = pickle.load(f)
 
         else:
-            coords, actual_shifts, noes, connectivity = generate_data(self.num_resid, pickle_data=pickle_data, example=example)
+            coords, actual_shifts, noes, connectivity = generate_data(self.num_resid, pickle_data=pickle_data, example=example, random_key=random_key)
 
         # get restraints
-        self.restraints = noe_combinations(noes, actual_shifts)
+        self.restraints = noe_combinations(noes, actual_shifts, tolerance_h=float(0.02/np.cbrt(self.num_resid)), tolerance_n=float(0.02/np.cbrt(self.num_resid)))
 
         # get plot of shifts and restraints
         plot_shifts(actual_shifts, self.restraints, coords, connectivity, named_tuple_used=True)
@@ -98,6 +99,7 @@ class GymEnv(gym.Env):
             "noes": noes,
             "assignments": self.assignments,
             "assign_order": self.assign_order,
+            "assign_shift": self.assign_shift,
             "total_energy": self.total_energy,
             "reward": self.reward
         }
