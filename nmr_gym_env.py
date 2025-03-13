@@ -51,7 +51,7 @@ class GymEnv(gym.Env):
 
     def reset(self, pickled=False, pickle_data=True, example=True, random_key=False):
 
-        name = f"./*{self.num_resid}.pkl" if example else "./current_run.pkl"
+        name = f"./*r{self.num_resid}.pkl" if example else "./current_run.pkl"
 
         if self.intermediate_energy > 0 or pickled:
             pickle_file = glob.glob(name)
@@ -60,7 +60,7 @@ class GymEnv(gym.Env):
                 actual_shifts = pickle.load(f)
                 noes = pickle.load(f)
                 connectivity = pickle.load(f)
-
+        
         elif pickle_data:
             generate_data(self.num_resid, pickle_data=pickle_data, example=example, random_key=random_key)
             pickle_file = glob.glob(name)
@@ -74,8 +74,11 @@ class GymEnv(gym.Env):
             coords, actual_shifts, noes, connectivity = generate_data(self.num_resid, pickle_data=pickle_data, example=example, random_key=random_key)
 
         # get restraints
-        self.restraints = noe_combinations(noes, actual_shifts, tolerance_h=float(0.02/np.cbrt(self.num_resid)), tolerance_n=float(0.02/np.cbrt(self.num_resid)))
-
+        """
+        float(float(0.001*(self.num_resid)+0.01)) shift tolerance needs to increase with protein size somehow or else it can miss the correct answer,
+        but this will increase the complexity of the problem
+        """
+        self.restraints = noe_combinations(noes, actual_shifts, tolerance_h=0.02, tolerance_n=0.02) 
         # get plot of shifts and restraints
         plot_shifts(actual_shifts, self.restraints, coords, connectivity, named_tuple_used=True)
 
@@ -116,7 +119,7 @@ class GymEnv(gym.Env):
         print(self.assignments)
 
         # calc energy and store temporarily
-        temp_intermediate_energy = energy.get_total_energy(self.restraints, self.assignments)
+        temp_intermediate_energy = energy.get_total_energy(self.restraints, self.assignments, tolerance=float(1/np.cbrt(self.num_resid)))
         # print(f'this is the temp energy {temp_intermediate_energy}')
 
         # calc reward based on previous energy and temporary energy 

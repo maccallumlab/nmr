@@ -67,7 +67,7 @@ class Energy():
         self.noes = noes
 
     def setup_noe_restraints(self):
-        combos = noe_combinations(self.noes, self.actual_shifts)
+        combos = noe_combinations(self.noes, self.actual_shifts, tolerance_h=0.02, tolerance_n=0.02)
         return combos
 
     def flat_bottom(self, x, tolerance):
@@ -88,7 +88,7 @@ class Energy():
                     lambda x: x**2 - xmax*x])    
         return y
     
-    def calc_restraint_energy(self, assignments, restraint):
+    def calc_restraint_energy(self, assignments, restraint, tolerance):
         """
         Goes over shift possibilities in the restraint, grabs associated coordinates from assignment, and calculates energy according to distance.
         Only the smallest energy is returned.
@@ -97,11 +97,11 @@ class Energy():
         for i, j in restraint:
             k, l = assignments.get(i), assignments.get(j)
             dist = np.linalg.norm((np.array(self.coords[k][:3]) - np.array(self.coords[l][:3])))
-            energy_value = self.flat_bottom(dist, tolerance=0.5)
+            energy_value = self.flat_bottom(dist, tolerance=tolerance)
             restraint_energy = energy_value if energy_value < restraint_energy else restraint_energy
         return restraint_energy
 
-    def noe_activation(self, assignments, restraint):
+    def noe_activation(self, assignments, restraint, tolerance):
         """
         Checks if all shift possibilities in the restraint have been assigned (aka activated).
         Calculates energy if they have, returns zero if they have not.
@@ -115,9 +115,9 @@ class Energy():
         if d:
             return 0
         else:
-            return self.calc_restraint_energy(assignments, restraint)  
+            return self.calc_restraint_energy(assignments, restraint, tolerance)  
 
-    def get_total_energy(self, restraints, assignments):
+    def get_total_energy(self, restraints, assignments, tolerance):
         """
         Loops over the NOE restraints to sum up calculated energies.
         """
@@ -127,7 +127,7 @@ class Energy():
             if restraint == []:
                 pass
             else:
-                energy_value = self.noe_activation(assignments, restraint)
+                energy_value = self.noe_activation(assignments, restraint, tolerance=tolerance)
                 total_energy += energy_value
 
         return total_energy
