@@ -1,5 +1,4 @@
 import gym
-import math
 import argparse
 import pickle
 
@@ -37,7 +36,7 @@ if __name__ == '__main__':
 
         histories, answer = generate_history(observation, history_length=history_length)
         histories.append(histories)
-        answers.append(answer)
+        answers.extend(answer)
 
     with open('fake_histories.pkl', 'wb') as f:
         pickle.dump(histories, f)

@@ -46,24 +46,29 @@ def generate_history(original, history_length=5):
     """
     Loops over chosen history length, adding noise to original data, reorganizes, and edits answer key if errors are introduced.
     """
-    answer = {}
+    answer = []
     history = []
 
     for i in range(history_length):
         protein, actual_shifts = perturb_data(original['coords'])
-        noes, predicted_shifts = distance_noe(protein, actual_shifts, cutoff=0.5)
-        connectivity = connectivity_data(protein, cutoff=0.37)
+        noes, predicted_shifts = distance_noe(protein, actual_shifts, cutoff=float(1/np.cbrt(len(actual_shifts))))
+        connectivity = connectivity_data(protein, cutoff=float(0.8/np.cbrt(len(actual_shifts))))
 
         coords, actual_shifts, noes, connectivity = order_data(protein, actual_shifts, predicted_shifts, noes, connectivity)
 
         restraints = noe_combinations(noes, actual_shifts)
 
-        history.append(coords)
-        history.extend((actual_shifts, noes, restraints, connectivity))
+        history.append([coords])
+        history[i].extend((actual_shifts, noes, restraints, connectivity))
+        # history.append(actual_shifts)
+        # history.append(noes)
+        # history.append(restraints)
+        # history.append(connectivity)
 
-        answer[i] = dict(original['assignments'])
+        # answer[i] = dict(original['assignments'])
+        # answer[i] = add_errors(answer[i])
+
+        answer.append([dict(original['assignments'])])
         answer[i] = add_errors(answer[i])
 
     return history, answer
-
-        
