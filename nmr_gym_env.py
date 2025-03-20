@@ -40,12 +40,25 @@ class GymEnv(gym.Env):
 
     def custom_state(self, state):
         self.state = state
-        frac_act = FracAct(self.num_resid, self.state['restraints'])
-        self.assign_order = frac_act.fractional_activation()
-        print(self.assign_order)
+        self.restraints = noe_combinations(self.state['noes'], self.state['actual_shifts'], tolerance_h=0.02, tolerance_n=0.02)
 
-         # get plot of shifts and restraints
-        plot_shifts(self.state['actual_shifts'], self.state['restraints'], self.state['coords'], named_tuple_used=False)
+        self.assignments = {}
+        self.assign_step = 0
+        self.assign_shift = 0
+        self.total_energy = 0.0
+        self.intermediate_energy = 0.0
+        self.reward = 0.0
+
+        # get assignment order 
+        # frac_act = FracAct(self.num_resid, self.restraints)
+        # self.assign_order = frac_act.fractional_activation()
+        self.assign_shift = self.state['assign_order'][self.assign_step]
+        # print(self.assign_order)
+        # print(f'Shift to be assigned: {self.assign_shift}')
+
+        # self.state['assign_order'] = self.assign_order
+        self.state['assign_shift'] = self.assign_shift
+        self.state['assignments'] = self.assignments
 
         return self.state
 
@@ -93,13 +106,14 @@ class GymEnv(gym.Env):
         frac_act = FracAct(self.num_resid, self.restraints)
         self.assign_order = frac_act.fractional_activation()
         self.assign_shift = self.assign_order[self.assign_step]
-        print(self.assign_order)
-        print(f'Shift to be assigned: {self.assign_shift}')
+        # print(self.assign_order)
+        # print(f'Shift to be assigned: {self.assign_shift}')
 
         self.state = {
             "coords": coords,
             "actual_shifts": actual_shifts,
             "noes": noes,
+            "connectivity": connectivity,
             "assignments": self.assignments,
             "assign_order": self.assign_order,
             "assign_shift": self.assign_shift,
@@ -110,13 +124,14 @@ class GymEnv(gym.Env):
         return self.state
 
     def step(self, action):
+        # print(action)
         assert action < self.num_resid and action not in self.state['assignments'].values()
 
         energy = Energy(self.state['coords'], self.state['actual_shifts'], self.state['noes'])
 
         # add action to assignments
         self.assignments[(self.assign_order[self.assign_step])] = action
-        print(self.assignments)
+        # print(self.assignments)
 
         # calc energy and store temporarily
         temp_intermediate_energy = energy.get_total_energy(self.restraints, self.assignments, tolerance=float(1/np.cbrt(self.num_resid)))
@@ -134,19 +149,19 @@ class GymEnv(gym.Env):
 
         # assign intermediate energy as running total
         self.state['total_energy'] = self.intermediate_energy
-        print(f"Running energy = {self.state['total_energy']}, Current reward = {self.state['reward']}")
+        # print(f"Running energy = {self.state['total_energy']}, Current reward = {self.state['reward']}")
 
         self.assign_step += 1
         # self.assign_shift = self.assign_order[self.assign_step]
         terminated = True if len(self.assignments) == self.num_resid else False
     
         if terminated:
-            print(f"Final assignments (shift:atom) = {self.assignments}\nFinal energy evaluation = {self.state['total_energy']}")
+            # print(f"Final assignments (shift:atom) = {self.assignments}\nFinal energy evaluation = {self.state['total_energy']}")
             return self.state, self.state['reward'], terminated, self.state['total_energy']
         
-        self.assign_shift = self.assign_order[self.assign_step]
+        self.state['assign_shift'] = self.assign_order[self.assign_step]
         if not terminated:
-            print(f'Shift to be assigned: {self.assign_shift}')
+            # print(f'Shift to be assigned: {self.state["assign_shift"]}')
             return self.state, self.state['reward'], terminated, self.state['total_energy']
     
         

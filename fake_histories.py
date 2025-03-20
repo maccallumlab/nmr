@@ -36,39 +36,44 @@ def add_errors(answer):
         return answer
     else:
         selections = np.random.choice(list(answer.values()), error_num, replace=False)
+        # print(selections)
         mutations = np.roll(selections, 1)
+        # print(mutations)
         for i, j in enumerate(selections):
+            # print(answer, answer[j], mutations[i], error_num)
             answer[j] = mutations[i]
-
+            
     return answer
 
-def generate_history(original, history_length=5):
+def generate_history(original, i, history_length=5):
     """
     Loops over chosen history length, adding noise to original data, reorganizes, and edits answer key if errors are introduced.
     """
-    answer = []
-    history = []
 
-    for i in range(history_length):
-        protein, actual_shifts = perturb_data(original['coords'])
-        noes, predicted_shifts = distance_noe(protein, actual_shifts, cutoff=float(1/np.cbrt(len(actual_shifts))))
-        connectivity = connectivity_data(protein, cutoff=float(0.8/np.cbrt(len(actual_shifts))))
+    protein, actual_shifts = perturb_data(original['coords'])
+    noes, predicted_shifts = distance_noe(protein, actual_shifts, cutoff=float(1/np.cbrt(len(actual_shifts))))
+    
+    connectivity = connectivity_data(protein, cutoff=float(0.8/np.cbrt(len(actual_shifts))))
 
-        coords, actual_shifts, noes, connectivity = order_data(protein, actual_shifts, predicted_shifts, noes, connectivity)
+    coords, actual_shifts, noes, connectivity = order_data(protein, actual_shifts, predicted_shifts, noes, connectivity)
 
-        restraints = noe_combinations(noes, actual_shifts)
+    # answer = original['assignments']
+    # answer, error_num = add_errors(answer)
+    
+    # issue with permanence - need to recreate full assignment for now
+    answer = {i:i for i in original['assign_order']}
+    answer = add_errors(answer)
 
-        history.append([coords])
-        history[i].extend((actual_shifts, noes, restraints, connectivity))
-        # history.append(actual_shifts)
-        # history.append(noes)
-        # history.append(restraints)
-        # history.append(connectivity)
+    state = {
+    "coords": coords,
+    "actual_shifts": actual_shifts,
+    "noes": noes,
+    "connectivity": connectivity,
+    "assignments": {},
+    "assign_order": list(answer.values()),
+    "assign_shift": 0,
+    "total_energy": 0.0,
+    "reward": 0.0
+    }
 
-        # answer[i] = dict(original['assignments'])
-        # answer[i] = add_errors(answer[i])
-
-        answer.append([dict(original['assignments'])])
-        answer[i] = add_errors(answer[i])
-
-    return history, answer
+    return state
