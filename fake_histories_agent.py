@@ -1,4 +1,4 @@
-import gym
+import gymnasium as gym
 import argparse
 import pickle
 import copy
@@ -38,7 +38,8 @@ if __name__ == '__main__':
         while not terminated:
             for action in observation['assign_order']:
                 observation, reward, terminated, total_energy = gym_env.step(action)
-                histories.append(copy.deepcopy(observation))
+                if not terminated:
+                    histories.append(copy.deepcopy(observation))
 
         # don't know if this is needed - issues with permanence of observation
         if i <= 0:

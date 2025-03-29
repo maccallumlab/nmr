@@ -1,5 +1,5 @@
-import gym
-from gym import error, spaces
+import gymnasium as gym
+from gymnasium import error, spaces
 import numpy as np
 import pickle
 import math

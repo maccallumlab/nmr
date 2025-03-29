@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import NamedTuple, List, Optional
 
+
 class NMRInput(NamedTuple):
     # input array of observed chemical shifts
     # 2-dimensions: N_shift, H_shift
@@ -33,19 +34,29 @@ class NMRInput(NamedTuple):
 
     # which peak should be assigned?
     peak_to_assign: int
-    
+
 
 class NMRTransformer(torch.nn.Module):
     """
     A transformer model for predicting the next peak to assign in an NMR spectrum.
     """
-    def __init__(self, n_hidden: int=128, n_heads: int=4, n_layers: int=4):
+
+    def __init__(
+        self,
+        n_hidden: int = 128,
+        n_heads: int = 4,
+        n_layers: int = 4,
+        dropout: float = 0.1,
+    ):
         super(NMRTransformer, self).__init__()
         self.embedder = NMRInitialEmbedding(n_hidden)
-        encoder_modules = [TransformerEncoderLayer(d_model=n_hidden, nhead=n_heads) for _ in range(n_layers)]
+        encoder_modules = [
+            TransformerEncoderLayer(d_model=n_hidden, nhead=n_heads, dropout=dropout)
+            for _ in range(n_layers)
+        ]
         self.encoder_layers = nn.Sequential(*encoder_modules)
-        self.policy_linear1 = nn.Linear(2*n_hidden, 2*n_hidden)
-        self.policy_linear2 = nn.Linear(2*n_hidden, 1)
+        self.policy_linear1 = nn.Linear(2 * n_hidden, 2 * n_hidden)
+        self.policy_linear2 = nn.Linear(2 * n_hidden, 1)
         self.value_linear1 = nn.Linear(n_hidden, n_hidden)
         self.value_linear2 = nn.Linear(n_hidden, 1)
 
@@ -59,11 +70,14 @@ class NMRTransformer(torch.nn.Module):
             n_res = len(nmr_inputs[i].pred_chemical_shifts)
             residue_embeddings = x[i][:n_res]
             peak_to_assign = nmr_inputs[i].peak_to_assign
-            assert peak_to_assign >=0 and peak_to_assign < len(nmr_inputs[i].obs_chemical_shifts)
+            assert peak_to_assign >= 0 and peak_to_assign < len(
+                nmr_inputs[i].obs_chemical_shifts
+            )
             peak_embedding = x[i][n_res + peak_to_assign].expand(n_res, -1)
             embeddings = torch.cat([residue_embeddings, peak_embedding], dim=1)
-            policy = self.policy_linear2(F.relu(self.policy_linear1(embeddings))).reshape(-1)
-            policy = F.softmax(policy)
+            policy = self.policy_linear2(
+                F.relu(self.policy_linear1(embeddings))
+            ).reshape(-1)
             policies.append(policy)
 
         # compute the value for each input in the batch
@@ -82,7 +96,8 @@ class NMRInitialEmbedding(nn.Module):
     """
     Embeds the initial input for the NMR transformer.
     """
-    def __init__(self, n_hidden: int=128):
+
+    def __init__(self, n_hidden: int = 128):
         super(NMRInitialEmbedding, self).__init__()
         self.linear_obs_shifts = nn.Linear(2, n_hidden)
         self.linear_pred_shifts = nn.Linear(2, n_hidden)
@@ -90,33 +105,23 @@ class NMRInitialEmbedding(nn.Module):
         self.linear_close_distances = nn.Linear(4, n_hidden)
         self.linear_assigned_peaks = nn.Linear(4, n_hidden)
         self.embeddings = nn.Embedding(6, n_hidden)
-        
+
     def forward(self, nmr_inputs: List[NMRInput]) -> torch.Tensor:
         # embed each of the inputs
         embedded_obs_shifts = self._handle_input(
-            [nmr.obs_chemical_shifts for nmr in nmr_inputs],
-            self.linear_obs_shifts,
-            0
+            [nmr.obs_chemical_shifts for nmr in nmr_inputs], self.linear_obs_shifts, 0
         )
         embedded_pred_shifts = self._handle_input(
-            [nmr.pred_chemical_shifts for nmr in nmr_inputs],
-            self.linear_pred_shifts,
-            1
+            [nmr.pred_chemical_shifts for nmr in nmr_inputs], self.linear_pred_shifts, 1
         )
         embedded_obs_noes = self._handle_input(
-            [nmr.obs_noes for nmr in nmr_inputs],
-            self.linear_obs_noes,
-            2
+            [nmr.obs_noes for nmr in nmr_inputs], self.linear_obs_noes, 2
         )
         embedded_close_distances = self._handle_input(
-            [nmr.close_distances for nmr in nmr_inputs],
-            self.linear_close_distances,
-            3
+            [nmr.close_distances for nmr in nmr_inputs], self.linear_close_distances, 3
         )
         embedded_assigned_peaks = self._handle_input(
-            [nmr.assigned_peaks for nmr in nmr_inputs],
-            self.linear_assigned_peaks,
-            4
+            [nmr.assigned_peaks for nmr in nmr_inputs], self.linear_assigned_peaks, 4
         )
 
         # collect the "global" token for each input
@@ -133,7 +138,7 @@ class NMRInitialEmbedding(nn.Module):
             embedded_obs_noes,
             embedded_close_distances,
             embedded_assigned_peaks,
-            embedded_global
+            embedded_global,
         ]
         for x1, x2, x3, x4, x5, x6 in zip(*variables_to_zip):
             concatendated.append(torch.cat([x1, x2, x3, x4, x5, x6], dim=0))
@@ -157,13 +162,14 @@ class TransformerEncoderLayer(nn.Module):
     TransformerEncoderLayer is made up of self-attn and feedforward network
     with residual connections.
     """
+
     def __init__(
         self,
         d_model,
         nhead,
         dim_feedforward=2048,
         dropout=0.1,
-        activation : nn.Module = torch.nn.functional.relu,
+        activation: nn.Module = torch.nn.functional.relu,
         layer_norm_eps=1e-5,
         norm_first=True,
         bias=True,
@@ -187,13 +193,16 @@ class TransformerEncoderLayer(nn.Module):
         self.linear2 = nn.Linear(dim_feedforward, d_model, bias=bias, **factory_kwargs)
 
         self.norm_first = norm_first
-        self.norm1 = nn.LayerNorm(d_model, eps=layer_norm_eps, bias=bias, **factory_kwargs)
-        self.norm2 = nn.LayerNorm(d_model, eps=layer_norm_eps, bias=bias, **factory_kwargs)
+        self.norm1 = nn.LayerNorm(
+            d_model, eps=layer_norm_eps, bias=bias, **factory_kwargs
+        )
+        self.norm2 = nn.LayerNorm(
+            d_model, eps=layer_norm_eps, bias=bias, **factory_kwargs
+        )
 
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
         self.activation = activation
-        
 
     def _sa_block(self, x):
         x = self.self_attn(x, x, x)
@@ -204,10 +213,10 @@ class TransformerEncoderLayer(nn.Module):
         return self.dropout2(x)
 
     def forward(self, src):
-        '''
+        """
         Arguments:
             src: (batch_size, seq_len, d_model)
-        '''
+        """
         x = src
         if self.norm_first:
             x = x + self._sa_block(self.norm1(x))
@@ -216,7 +225,7 @@ class TransformerEncoderLayer(nn.Module):
             x = self.norm1(x + self._sa_block(x))
             x = self.norm2(x + self._ff_block(x))
         return x
-    
+
 
 class MultiHeadAttention(nn.Module):
     """
@@ -232,6 +241,7 @@ class MultiHeadAttention(nn.Module):
         dropout (float, optional): Dropout probability. Default: 0.0
         bias (bool, optional): Whether to add bias to input projection. Default: True
     """
+
     def __init__(
         self,
         E_q: int,
@@ -257,7 +267,9 @@ class MultiHeadAttention(nn.Module):
         self.E_head = E_total // nheads
         self.bias = bias
 
-    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+    ) -> torch.Tensor:
         """
         Forward pass; runs the following process:
             1. Apply input projection
@@ -290,7 +302,8 @@ class MultiHeadAttention(nn.Module):
         # Step 3. Run SDPA
         # (N, nheads, L_t, E_head)
         attn_output = F.scaled_dot_product_attention(
-            query, key, value, dropout_p=self.dropout)
+            query, key, value, dropout_p=self.dropout
+        )
         # (N, nheads, L_t, E_head) -> (N, L_t, nheads, E_head) -> (N, L_t, E_total)
         attn_output = attn_output.transpose(1, 2).flatten(-2)
 
@@ -299,7 +312,7 @@ class MultiHeadAttention(nn.Module):
         attn_output = self.out_proj(attn_output)
 
         return attn_output
-    
+
 
 if __name__ == "__main__":
     # stupid code to find simple errors
@@ -310,14 +323,16 @@ if __name__ == "__main__":
             obs_noes=torch.randn(3, 3),
             close_distances=torch.randn(2, 4),
             assigned_peaks=torch.randn(2, 4),
-            peak_to_assign=0),
+            peak_to_assign=0,
+        ),
         NMRInput(
             obs_chemical_shifts=torch.randn(5, 2),
             pred_chemical_shifts=torch.randn(5, 2),
             obs_noes=torch.randn(4, 3),
             close_distances=torch.randn(7, 4),
             assigned_peaks=None,
-            peak_to_assign=0)
+            peak_to_assign=0,
+        ),
     ]
     trans = NMRTransformer()
     output = trans(nmr_inputs)
