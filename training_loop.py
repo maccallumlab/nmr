@@ -110,6 +110,7 @@ if __name__ == "__main__":
 
     # create our network and optimizer
     net = NMRTransformer(dropout=0.0)
+    net.compile()
     opt = torch.optim.Adam(net.parameters())
     policy_loss = torch.nn.CrossEntropyLoss()
 
@@ -123,23 +124,27 @@ if __name__ == "__main__":
         y_hats, _ = net(xs)
 
         loss = 0
+        count = 0
         for y_hat, y in zip(y_hats, ys):
             delta = policy_loss(y_hat, torch.tensor(y))
             loss += delta
+            count += 1
+        
+        loss = loss / count
 
-        print(loss.item())
+        correct = 0
+        trials = 0
+        for y_hat, y in zip(y_hats, ys):
+            y_pred = torch.argmax(y_hat)
+            if y_pred == y:
+                correct += 1
+            trials += 1
+        accuracy = correct / trials
 
-        # correct = 0
-        # trials = 0
-        # for y_hat, y in zip(y_hats, ys):
-        #     y_pred = torch.argmax(y_hat)
-        #     if y_pred == y:
-        #         correct += 1
-        #     trials += 1
-        # accuracy = correct / trials
+        print(loss.item(), accuracy)
 
         writer.add_scalar("Loss/train", loss.item(), iteration)
-        # writer.add_scalar("Loss/accuracy", accuracy, iteration)
+        writer.add_scalar("Loss/accuracy", accuracy, iteration)
         opt.zero_grad()
         loss.backward()
         opt.step()
