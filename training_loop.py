@@ -1,9 +1,9 @@
 import torch
-import torcheval
 import pickle
 import numpy as np
 from nmr_transformer import *
 from torch.utils.tensorboard import SummaryWriter
+import random
 
 
 def extract_data(pickle_file="fake_histories.pkl"):
@@ -101,57 +101,103 @@ def organize_nmr_inputs(histories, device):
     return nmr_inputs
 
 
+
 if __name__ == "__main__":
-    # set device
+    # Set device
     device = "cpu"
 
-    # set up tensor board
+    # Set up TensorBoard
     writer = SummaryWriter()
 
-    # load data
+    # Load data
     nmr_inputs = organize_nmr_inputs(extract_data(), device=device)
 
-    # create our network and optimizer
-    net = NMRTransformer(dropout=0.0, device=device)
-    for layer in net.modules():
-            if isinstance(layer, (nn.Conv2d, nn.Linear)):
-                torch.nn.init.kaiming_normal_(layer.weight, mode='fan_out', nonlinearity='relu')
-                if layer.bias is not None:
-                    torch.nn.init.zeros_(layer.bias)
+    # Shuffle the data
+    random.shuffle(nmr_inputs)
 
+    # Split dataset manually into training and testing
+    train_size = int(0.8 * len(nmr_inputs))
+    train_data = nmr_inputs[:train_size]
+    test_data = nmr_inputs[train_size:]
+
+    # Create our network and optimizer
+    net = NMRTransformer(dropout=0.1, device=device)
     opt = torch.optim.Adam(net.parameters(), lr=1e-5)
     policy_loss = torch.nn.CrossEntropyLoss()
 
-    # training loop
+    # Training loop
+    batch_size = 8
+    epochs = 10_000  # Define the number of epochs
+    eval_interval = 100  # Evaluate the model every 100 iterations
+
     iteration = 0
-    while True:
-        iteration += 1
-        xs = [inp[0] for inp in nmr_inputs]
-        ys = [inp[1] for inp in nmr_inputs]
+    for epoch in range(epochs):
+        net.train()
+        random.shuffle(train_data)  # Shuffle training data each epoch
 
-        y_hats, _ = net(xs)
+        # Break training data into batches manually
+        for i in range(0, len(train_data), batch_size):
+            batch = train_data[i:i + batch_size]
+            xs = [inp[0] for inp in batch]
+            ys = [inp[1] for inp in batch]
 
-        loss = 0
-        count = 0
-        for y_hat, y in zip(y_hats, ys):
-            delta = policy_loss(y_hat, torch.tensor(y, device=device))
-            loss += delta
-            count += 1
-        loss = loss / count
+            iteration += 1
 
-        correct = 0
-        trials = 0
-        for y_hat, y in zip(y_hats, ys):
-            y_pred = torch.argmax(y_hat)
-            if y_pred == y:
-                correct += 1
-            trials += 1
-        accuracy = correct / trials
-        print(loss.item(), accuracy)
+            y_hats, _ = net(xs)
 
-        writer.add_scalar("Loss/train", loss.item(), iteration)
-        writer.add_scalar("Loss/accuracy", accuracy, iteration)
-        opt.zero_grad()
-        loss.backward()
-        opt.step()
+            loss = 0
+            correct = 0
+            count = 0
 
+            for y_hat, y in zip(y_hats, ys):
+                y = torch.tensor(y, device=device)
+                loss += policy_loss(y_hat, y)
+
+                y_pred = torch.argmax(y_hat)
+                if y_pred == y:
+                    correct += 1
+                count += 1
+
+            loss = loss / count
+            accuracy = correct / count
+
+            print(f"Iteration {iteration} - Loss: {loss.item()} - Accuracy: {accuracy}")
+
+            writer.add_scalar("Loss/train", loss.item(), iteration)
+            writer.add_scalar("Accuracy/train", accuracy, iteration)
+
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+
+            # Evaluate on test set periodically
+            if iteration % eval_interval == 0:
+                net.eval()
+                test_loss = 0
+                test_correct = 0
+                test_trials = 0
+
+                with torch.no_grad():
+                    for j in range(0, len(test_data), batch_size):
+                        test_batch = test_data[j:j + batch_size]
+                        xs = [inp[0] for inp in test_batch]
+                        ys = [inp[1] for inp in test_batch]
+
+                        test_y_hats, _ = net(xs)
+                        
+                        batch_loss = 0
+                        for y_hat, y in zip(test_y_hats, ys):
+                            y = torch.tensor(y, device=device)
+                            batch_loss += policy_loss(y_hat, y).item()
+                            if torch.argmax(y_hat) == y:
+                                test_correct += 1
+                            test_trials += 1
+                        
+                        test_loss += batch_loss / len(test_batch)
+                        
+                test_loss /= (len(test_data) / batch_size)
+                test_accuracy = test_correct / test_trials
+
+                print(f"Test Loss: {test_loss} - Test Accuracy: {test_accuracy}")
+                writer.add_scalar("Loss/test", test_loss, iteration)
+                writer.add_scalar("Accuracy/test", test_accuracy, iteration)
