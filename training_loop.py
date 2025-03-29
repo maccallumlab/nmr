@@ -70,7 +70,7 @@ def preprocess_data(histories):
     )
 
 
-def organize_nmr_inputs(histories):
+def organize_nmr_inputs(histories, device):
     """
     Sets up NMR inputs as list of named tuples.
     """
@@ -87,11 +87,11 @@ def organize_nmr_inputs(histories):
     nmr_inputs = [
         (
             NMRInput(
-                obs_chemical_shifts=torch.tensor(actual_shifts[i], dtype=torch.float),
-                pred_chemical_shifts=torch.tensor(predicted_shifts[i], dtype=torch.float),
-                obs_noes=torch.tensor(noes[i], dtype=torch.float),
-                close_distances=torch.tensor(close_dist[i], dtype=torch.float),
-                assigned_peaks=torch.tensor(assignments[i], dtype=torch.float) if assignments[i] else None,
+                obs_chemical_shifts=torch.tensor(actual_shifts[i], dtype=torch.float, device=device),
+                pred_chemical_shifts=torch.tensor(predicted_shifts[i], dtype=torch.float, device=device),
+                obs_noes=torch.tensor(noes[i], dtype=torch.float, device=device),
+                close_distances=torch.tensor(close_dist[i], dtype=torch.float, device=device),
+                assigned_peaks=torch.tensor(assignments[i], dtype=torch.float, device=device) if assignments[i] else None,
                 peak_to_assign=assign_peak[i],
             ),
             correct_answer[i],
@@ -102,15 +102,24 @@ def organize_nmr_inputs(histories):
 
 
 if __name__ == "__main__":
+    # set device
+    device = "cpu"
+
     # set up tensor board
     writer = SummaryWriter()
 
     # load data
-    nmr_inputs = organize_nmr_inputs(extract_data())
+    nmr_inputs = organize_nmr_inputs(extract_data(), device=device)
 
     # create our network and optimizer
-    net = NMRTransformer(dropout=0.0)
-    opt = torch.optim.Adam(net.parameters())
+    net = NMRTransformer(dropout=0.0, device=device)
+    for layer in net.modules():
+            if isinstance(layer, (nn.Conv2d, nn.Linear)):
+                torch.nn.init.kaiming_normal_(layer.weight, mode='fan_out', nonlinearity='relu')
+                if layer.bias is not None:
+                    torch.nn.init.zeros_(layer.bias)
+
+    opt = torch.optim.Adam(net.parameters(), lr=1e-5)
     policy_loss = torch.nn.CrossEntropyLoss()
 
     # training loop
@@ -123,23 +132,25 @@ if __name__ == "__main__":
         y_hats, _ = net(xs)
 
         loss = 0
+        count = 0
         for y_hat, y in zip(y_hats, ys):
-            delta = policy_loss(y_hat, torch.tensor(y))
+            delta = policy_loss(y_hat, torch.tensor(y, device=device))
             loss += delta
+            count += 1
+        loss = loss / count
 
-        print(loss.item())
-
-        # correct = 0
-        # trials = 0
-        # for y_hat, y in zip(y_hats, ys):
-        #     y_pred = torch.argmax(y_hat)
-        #     if y_pred == y:
-        #         correct += 1
-        #     trials += 1
-        # accuracy = correct / trials
+        correct = 0
+        trials = 0
+        for y_hat, y in zip(y_hats, ys):
+            y_pred = torch.argmax(y_hat)
+            if y_pred == y:
+                correct += 1
+            trials += 1
+        accuracy = correct / trials
+        print(loss.item(), accuracy)
 
         writer.add_scalar("Loss/train", loss.item(), iteration)
-        # writer.add_scalar("Loss/accuracy", accuracy, iteration)
+        writer.add_scalar("Loss/accuracy", accuracy, iteration)
         opt.zero_grad()
         loss.backward()
         opt.step()
