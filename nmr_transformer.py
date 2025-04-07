@@ -47,12 +47,16 @@ class NMRTransformer(nn.Module):
         n_heads: int = 4,
         n_layers: int = 4,
         dropout: float = 0.1,
-        device = None
+        device=None,
     ):
         super(NMRTransformer, self).__init__()
         self.embedder = NMRInitialEmbedding(n_hidden, device=device)
         encoder_layers = nn.TransformerEncoderLayer(
-            d_model=n_hidden, nhead=n_heads, dropout=dropout, device=device
+            d_model=n_hidden,
+            dim_feedforward=n_hidden * n_heads,
+            nhead=n_heads,
+            dropout=dropout,
+            device=device,
         )
         self.encoder = nn.TransformerEncoder(encoder_layers, num_layers=n_layers)
         self.policy_linear1 = nn.Linear(2 * n_hidden, 2 * n_hidden, device=device)
@@ -66,7 +70,9 @@ class NMRTransformer(nn.Module):
             0, 1
         )  # (S, N, D) for nn.Transformer compatibility
 
-        x = self.encoder(embedded, src_key_padding_mask=mask, is_causal=False)  # (S, N, D)
+        x = self.encoder(
+            embedded, src_key_padding_mask=mask, is_causal=False
+        )  # (S, N, D)
         x = x.transpose(0, 1)  # (N, S, D)
 
         policies = []
@@ -74,11 +80,8 @@ class NMRTransformer(nn.Module):
             n_res = len(nmr_input.pred_chemical_shifts)
             residue_embeddings = x[i, 1 : (n_res + 1), :]
             peak_to_assign = nmr_input.peak_to_assign
-            peak_embedding = x[i, n_res + peak_to_assign + 1, :].expand(n_res, -1)
-            embeddings = torch.cat([residue_embeddings, peak_embedding], dim=1)
-            policy = self.policy_linear2(
-                F.relu(self.policy_linear1(embeddings))
-            ).reshape(-1)
+            peak_embedding = x[i, n_res + peak_to_assign + 1, :]
+            policy = torch.matmul(residue_embeddings, peak_embedding)
             policies.append(policy)
 
         embeddings = x[:, 0, :]  # Global tokens for each input in the batch

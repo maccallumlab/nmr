@@ -104,7 +104,7 @@ def organize_nmr_inputs(histories, device):
 
 if __name__ == "__main__":
     # Set device
-    device = "cpu"
+    device = "mps"
 
     # Set up TensorBoard
     writer = SummaryWriter()
@@ -121,22 +121,22 @@ if __name__ == "__main__":
     test_data = nmr_inputs[train_size:]
 
     # Create our network and optimizer
-    net = NMRTransformer(dropout=0.1, device=device)
-    opt = torch.optim.Adam(net.parameters(), lr=1e-5)
+    net = NMRTransformer(dropout=0.1, n_layers=4, device=device)
+    opt = torch.optim.AdamW(net.parameters(), lr=1e-4, weight_decay=0.01)
     policy_loss = torch.nn.CrossEntropyLoss()
 
     # Training loop
-    batch_size = 8
-    epochs = 10_000  # Define the number of epochs
+    batch_size = 10
+    epochs = 500_000  # Define the number of epochs
     eval_interval = 100  # Evaluate the model every 100 iterations
 
     iteration = 0
     for epoch in range(epochs):
-        net.train()
         random.shuffle(train_data)  # Shuffle training data each epoch
 
         # Break training data into batches manually
         for i in range(0, len(train_data), batch_size):
+            net.train()
             batch = train_data[i:i + batch_size]
             xs = [inp[0] for inp in batch]
             ys = [inp[1] for inp in batch]
