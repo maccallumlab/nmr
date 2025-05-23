@@ -4,15 +4,19 @@ from typing import NamedTuple
 import random
 import argparse
 import pickle
+import glob as glob
+
 
 class HSQCPeak(NamedTuple):
     H1: float
     N15: float
 
+
 class NOEPeak(NamedTuple):
     H1: float
     N15: float
     H2: float
+
 
 class Protein(NamedTuple):
     x: float
@@ -21,151 +25,220 @@ class Protein(NamedTuple):
     H1: float
     N15: float
 
+
 class Connectivity(NamedTuple):
     atom1: float
     atom2: float
     distance: float
 
-# Sampled points from unit square/cube
-def sample_unit(n, num_sides, min=0, max=1):
-    return np.random.uniform(min, max, size=(n, num_sides))
 
-# Noise to sampled points
-def add_noise(point, scale=0.1, min=0, max=1):
-    """
-    Random selection from normal (gaussian) distribution of 'scale' width from 0 (center).
-    'size' makes sure that it's the same shape as the point we are adding noises to.
-    ex. point = [0,1,2], noise = [1,1,1], noisy_point = [1,2,3]
-    """
-    noise = np.random.normal(0, scale, size=point.shape)
-    noisy_point = point + noise
+class FakeDataGenerator():
 
-    # fold over points outside of boundaries 
-    for point in noisy_point:
-        for i, value in enumerate(point):
-            if max < value:
-                point[i] = (max-(value-max))
-            if value < min:
-                point[i] = (min-value)
+    def __init__(self, num_resid):
+        self.num_resid: int = num_resid
+        self.nshift_min = 100
+        self.nshift_max = 135
+        self.hshift_min = 6
+        self.hshift_max = 10
+        self.cutoff = 0.5
 
-    return noisy_point
+    def sample_unit(self, num_points, num_sides, min_len=0, max_len=1):
+        """ 
+        Samples points from unit square or cube.
+        """
+        return np.random.uniform(low=min_len, high=max_len, size=(num_points, num_sides))
 
-def calc_dist(p1, p2):
-    return np.linalg.norm((p2-p1))
+    def scale_unit(self, coordinates):
+        """
+        Scaling box size to reflect a globular protein.
+        PDB:1CRC (~100 resid, globular, ~3.2 nm diameter)
 
-def distance_noe(protein, shifts, cutoff=0.5, random_key=False):
-    """
-    Grabs close coordinates and 'associated' HSQC shift peaks (randomized index or 1:1 correlation) to create NOES.
-    Predicted shifts assigned as shift order - this order is associated with the coordinate order if randomized (ie. the answer key).
-    Adds gaussian noise to all points at the end.
+        Rg = RN**v
+        Scaling factor (v) of 0.4, instead of 0.3 (cube-root)
+        R of 0.2 nm used in paper for fit
+        DOI: 10.1142/S021972002050050X
+        """
+        radius_gyration = 0.2*(self.num_resid**0.4)
 
-    **Can end up with no NOEs depending on the cutoff**
-    """
-    if random_key:
-        shifts = np.random.permutation(shifts)
-
-    noes = []
-
-    for i, atom1 in enumerate(protein):
-        for j, atom2 in enumerate(protein):
-            if i != j:
-                dist = calc_dist(atom1, atom2)
-                if dist < cutoff:
-                    #print(dist, shifts[i], shifts[j])
-                    noe = list(shifts[i][:]) # H1, N1
-                    noe.append(shifts[j][0]) # H2
-                    noes.append(noe)
-
-    
-    noisy_noe = add_noise(np.array(noes), scale=0.01)
-    predicted_shifts = add_noise(np.array(shifts), scale=0.1)
-    
-    return noisy_noe, predicted_shifts
-
-def connectivity_data(protein, cutoff):
-    """
-    Calculates close contacts based on coordinates.
-    """
-    connectivity = []
-    
-    for i, atom1 in enumerate(protein):
-        for j, atom2 in enumerate(protein):
-            if i != j:
-                dist = calc_dist(atom1, atom2) #dist = np.linalg.norm(atom1 - atom2)
-                if dist < cutoff:
-                    connectivity.append((i, j, dist))
-
-    return connectivity
-
-def generate_raw_data(num_resid, random_key):
-    """
-    Generates all qualities of the system as individual arrays.
-    """
-    # 3D structure [x,y,z]
-    protein = sample_unit(num_resid, num_sides=3)
-    # "Actual" shifts [H1,N1]
-    actual_shifts = sample_unit(num_resid, num_sides=2)
-    # NOES [H1,N1,H2] and predicted shifts [H1,N1]
-    noes, predicted_shifts = distance_noe(protein, actual_shifts, cutoff=float(1/np.cbrt(num_resid)), random_key=random_key)
-    # connectivity [atom1,atom2,dist]
-    connectivity = connectivity_data(protein, cutoff=float(0.8/np.cbrt(num_resid))) #0.37
-
-    return protein, actual_shifts, predicted_shifts, noes, connectivity
-
-def order_data(protein, actual_shifts, predicted_shifts, noes, connectivity):
-    """
-    Compiles data in a list of named tuples with one object per residue.
-    """
-    coords = [Protein(x=resid[0], y=resid[1], z=resid[2], H1=shift[0], N15=shift[1]) for resid, shift in zip(protein, predicted_shifts)]
-    actual_shifts = [HSQCPeak(H1=shift[0], N15=shift[1]) for shift in actual_shifts]
-    noes = [NOEPeak(H1=shift[0], N15=shift[1], H2=shift[2]) for shift in noes]
-    connectivity = [Connectivity(atom1=connect[0], atom2=connect[1], distance=connect[2]) for connect in connectivity]
-
-    return coords, actual_shifts, noes, connectivity
-
-def save_as_pickle(coords, actual_shifts, noes, connectivity, num_resid, example=True):
-    """
-    Saves data to disk. Run is given a proper name if used as a saved example. 
-    """
-    name = f'fakedata_r{num_resid}.pkl' if example else f'current_run.pkl'
-
-    with open(name, 'wb') as f:
-        pickle.dump(coords, f)
-        pickle.dump(actual_shifts, f)
-        pickle.dump(noes, f)
-        pickle.dump(connectivity, f)
-
-def generate_data(num_resid, pickle_data=True, example=True, random_key=False):
-    """
-    Generates all fake data, orders it in lists of namedtuples, and pickles if required.
-    """
-    protein, actual_shifts, predicted_shifts, noes, connectivity = generate_raw_data(num_resid, random_key=random_key)
-    coords, actual_shifts, noes, connectivity = order_data(protein, actual_shifts, predicted_shifts, noes, connectivity)
-
-    if pickle_data:
-        save_as_pickle(coords, actual_shifts, noes, connectivity, num_resid, example=example)
-
-    else:
-        return coords, actual_shifts, noes, connectivity
-
-# if __name__ == '__main__':
-# parser = argparse.ArgumentParser()
-# parser.add_argument('num_resid', type=int, help='Number of residues')
-# args = parser.parse_args()
-
-# num_resid = args.num_resid
-# generate_data(num_resid)
-
-#     # These should be grouped to export into an environment
-#     coords, actual_shifts, predicted_shifts, noes = generate_data(num_resid)
-    # print(f'coords {(np.array(coords)).tolist()}')#\n shifts{(np.array(actual_shifts)).tolist()}\n noes{(np.array(noes)).tolist()}')
-    # # print(actual_shifts)
-    # # print(noes)
-
-    # energy_obj = Energy(coords, actual_shifts, noes)
-    # test = energy_obj.setup_noe_restraints()
-    # # print(test)
-    # # print(coords)
+        com = np.mean(coordinates, axis=0) # should be ~0.5
+        distances_sampled = np.linalg.norm(coordinates - com, axis=1) # distances around origin
+        radius_sampled = np.sqrt(np.mean((distances_sampled**2))) # radius of gyration based on these distances
         
-    # test_energy = energy_obj.get_total_energy(test, {0:2, 1:1, 2:0})
-    # print(test_energy)
+        # Expected is radius_gyration, current is radius_sampled --> scale to fit
+        # Will overlap occur?
+        scale = radius_gyration / radius_sampled 
+        coordinates_scaled = com + ((coordinates - com) * scale)
+
+        return coordinates_scaled
+
+    def create_hsqc(self):
+        """
+        Sample points within NMR window for H1 and N15. Stack values to create HSQC peaks.
+        """
+        # H shifts
+        h_shifts = self.sample_unit(self.num_resid, num_sides=1, min_len=self.hshift_min, max_len=self.hshift_max)
+        # N shifts
+        n_shifts = self.sample_unit(self.num_resid, num_sides=1, min_len=self.nshift_min, max_len=self.nshift_max)
+
+        return np.hstack((h_shifts, n_shifts))
+
+    def add_noise(self, points, scale=0.1):
+        """
+        Random selection from normal (gaussian) distribution of 'scale' width from 0 (center).
+        'size' makes sure that it's the same shape as the point we are adding noises to.
+        ex. point = [0,1,2], noise = [1,1,1], noisy_point = [1,2,3]
+        """
+        noise = np.random.normal(loc=0, scale=scale, size=points.shape)
+        noisy_point = points + noise
+
+        # fold over points outside of boundaries 
+        # for point in noisy_point:
+        #     for i, axis in enumerate(point):
+        #         if max_len < axis:
+        #             point[i] = (max_len - (axis - max_len))
+        #         if axis < min_len:
+        #             point[i] = (min_len - axis)
+        #         else:
+        #             pass
+
+        return noisy_point
+
+    def calculate_dist(self, p1, p2):
+        """
+        Euclidian distance between two points.
+        """
+        return np.linalg.norm((p2 - p1))
+
+    def create_noes(self, coordinates, shifts, random_key=False):
+        """
+        Grabs close coordinates and 'associated' HSQC shift peaks (randomized index or 1:1 correlation) to create noes.
+        Predicted shifts assigned as shift order - this order is associated with the coordinate order if randomized (ie. the answer key).
+        Adds gaussian noise to all points at the end.
+
+        **Can end up with no noes depending on the cutoff**
+        """
+        if random_key:
+            shifts = np.random.permutation(shifts)
+
+        noe_list = []
+        for i, atom1 in enumerate(coordinates):
+            for j, atom2 in enumerate(coordinates):
+                if i != j:
+                    dist = self.calculate_dist(atom1, atom2)
+                    # dist = dist_grid[i][j]
+                    if dist < self.cutoff:
+                        #print(dist, shifts[i], shifts[j])
+                        noe = list(shifts[i][:]) # H1, N15
+                        noe.append(shifts[j][0]) # H2
+                        noe_list.append(noe)
+
+        noisy_noes = self.add_noise(np.array(noe_list), scale=0.01)
+        pred_chemical_shifts = self.add_noise(np.array(shifts), scale=0.1)
+
+        return noisy_noes, pred_chemical_shifts
+
+    def calculate_connectivity(self, coordinates):
+        """
+        Calculates close contacts based on protein coordinates.
+        """
+        contacts = []
+
+        for i, atom1 in enumerate(coordinates):
+            for j, atom2 in enumerate(coordinates):
+                if i != j:
+                    dist = self.calculate_dist(atom1, atom2)
+                    # dist = dist_grid[i][j]
+                    if dist < self.cutoff:
+                        contacts.append((i, j, dist))
+
+        return contacts
+
+    # def pdist_test(self, coordinates):
+    #     pairwise_dists = pdist(coordinates)
+    #     square_dists = squareform(pairwise_dists)
+    #     return square_dists
+
+    def generate_data_arrays(self, random_key):
+        """
+        Generates all qualities of the system as individual arrays.
+        """
+        # 3D structure [x,y,z]
+        pred_coordinates = self.sample_unit(self.num_resid, num_sides=3)
+        pred_coordinates = self.scale_unit(pred_coordinates)
+    
+        # "Actual" shifts [H1,N15]
+        obs_chemical_shifts = self.create_hsqc()
+        
+        # Distance grid
+        # dist_grid = self.pdist_test(pred_coordinates)
+
+        # NOEs [H1,N15,H2] and predicted shifts [H1,N15]
+        noes, pred_chemical_shifts = self.create_noes(pred_coordinates, obs_chemical_shifts, random_key=random_key)
+
+        # Connectivity [atom1,atom2,dist]
+        connectivity = self.calculate_connectivity(pred_coordinates)
+
+        return pred_coordinates, obs_chemical_shifts, pred_chemical_shifts, noes, connectivity
+
+    def order_data(self, pred_coordinates, obs_chemical_shifts, pred_chemical_shifts, noes, connectivity):
+        """
+        Compiles data in a list of named tuples with one object per residue.
+        """
+        pred_coordinates = [Protein(x=resid[0], y=resid[1], z=resid[2], H1=shift[0], N15=shift[1]) for resid, shift in zip(pred_coordinates, pred_chemical_shifts)]
+        # pred_chemical_shifts = [HSQCPeak(H1=shift[0], N15=shift[1]) for shift in pred_chemical_shifts]
+        obs_chemical_shifts = [HSQCPeak(H1=shift[0], N15=shift[1]) for shift in obs_chemical_shifts]
+        noes = [NOEPeak(H1=shift[0], N15=shift[1], H2=shift[2]) for shift in noes]
+        connectivity = [Connectivity(atom1=contact[0], atom2=contact[1], distance=contact[2]) for contact in connectivity]
+
+        return pred_coordinates, obs_chemical_shifts, noes, connectivity
+
+    def dump_pickle(self, pred_coordinates, obs_chemical_shifts, noes, connectivity, example=True):
+        """
+        Saves data to disk. Run is given a proper name if used as a saved example. 
+        """
+        name = f'fakedata_r{self.num_resid}.pkl' if example else f'current_run.pkl'
+        
+        with open(name, 'wb') as f:
+            pickle.dump(pred_coordinates, f)
+            pickle.dump(obs_chemical_shifts, f)
+            pickle.dump(noes, f)
+            pickle.dump(connectivity, f)
+    
+    def load_pickle(self, example):
+
+        name = f"./*r{self.num_resid}.pkl" if example else "./current_run.pkl"
+
+        pickle_file = glob.glob(name)
+        with open(pickle_file[0], 'rb') as f:
+            coordinates = pickle.load(f)
+            obs_chemical_shifts = pickle.load(f)
+            noes = pickle.load(f)
+            connectivity = pickle.load(f)
+        
+        return coordinates, obs_chemical_shifts, noes, connectivity
+
+    def generate_data(self, pickle_data=True, example=True, random_key=False):
+        """
+        Generates all fake data, orders it in lists of namedtuples, and pickles if required.
+        """
+        pred_coordinates, obs_chemical_shifts, pred_chemical_shifts, noes, connectivity = self.generate_data_arrays(random_key=random_key)
+        pred_coordinates, obs_chemical_shifts, noes, connectivity = self.order_data(pred_coordinates, obs_chemical_shifts, pred_chemical_shifts, noes, connectivity)
+
+        if pickle_data:
+            self.dump_pickle(pred_coordinates, obs_chemical_shifts, noes, connectivity, example=example)
+
+        else:
+            return pred_coordinates, obs_chemical_shifts, noes, connectivity
+
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('num_resid', type=int, help='Number of residues')
+    args = parser.parse_args()
+
+    num_resid = args.num_resid
+
+    fakedata = FakeDataGenerator(num_resid)
+    pred_coordinates, obs_chemical_shifts, noes, connectivity = fakedata.generate_data(pickle_data=False, example=False)
+    

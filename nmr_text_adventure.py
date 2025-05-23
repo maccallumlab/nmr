@@ -1,12 +1,37 @@
-import gym
+import gymnasium as gym
 import math
 import argparse
 
 from nmr_gym_env import GymEnv
-from visualize_data import plot_shifts
+from fake_data import FakeDataGenerator
+from visualize_data import Visualization
 
-if __name__ == '__main__':
+
+
+def get_data(num_resid, pickled=False, pickle_data=True, example=True, random_key=False):
+    assert not pickled or not pickle_data
+
+    fakedata = FakeDataGenerator(num_resid)
+    name = f"./*r{num_resid}.pkl" if example else "./current_run.pkl"
+
+    # Grab a previous example (already pickled)
+    if pickled:
+        coordinates, obs_chemical_shifts, noes, connectivity = fakedata.load_pickle(example=example)
+
+    # Create a new example and pickle
+    elif pickle_data:
+        fakedata.generate_data(pickle_data=True, example=example, random_key=random_key)
+        coordinates, obs_chemical_shifts, noes, connectivity = fakedata.load_pickle(example=example)
+
+    # Run a new example and don't pickle
+    else:
+        coordinates, obs_chemical_shifts, noes, connectivity = fakedata.generate_data(pickle_data=False, example=example, random_key=random_key)
     
+    return coordinates, obs_chemical_shifts, noes, connectivity
+
+
+def text_adventure():
+
     parser = argparse.ArgumentParser()
     parser.add_argument('num_resid', type=int, help='Number of residues')
     args = parser.parse_args()
@@ -16,32 +41,83 @@ if __name__ == '__main__':
     gym_env = GymEnv(num_resid)
     total_energy = math.inf
 
+    ######################################################
+
+    print("\nAvailable options to work with:\n1. Generate and save an example\n2. Grab a previous saved example\n3. Run a new example (not saved)")
+
+    selection = int(input("Option Selection: "))
+
+    if selection == 1:
+        # 1. Need to generate and save an example? Saved in all instances as fakedata_r{num_resid}.pkl
+        coordinates, obs_chemical_shifts, noes, connectivity = get_data(num_resid, pickled=False, pickle_data=True, example=True, random_key=True)
+    if selection == 2:
+        # 2. Grab one of the previous examples? Make sure example exists with desired resid number
+        coordinates, obs_chemical_shifts, noes, connectivity = get_data(num_resid, pickled=True, pickle_data=False, random_key=True)
+    if selection == 3:
+        # 3. Run a new example? Saved in all instances as current_run.pkl
+        coordinates, obs_chemical_shifts, noes, connectivity = get_data(num_resid, pickled=False, pickle_data=True, example=False, random_key=True)
+
+    ######################################################
+
+    # Game repeats until energy of zero is reached
     while total_energy > 0:
 
-        ###### Available options to work with right now ######
-
-        # 1. Need to generate and save an example? Saved in all instances as fakedata_r{num_resid}.pkl
-        # observation = gym_env.reset(pickled=False, pickle_data=True, random_key=True)
-
-        # 2. Grab one of these previous examples? Make sure example exists with desired resid number.
-        # observation = gym_env.reset(pickled=True, pickle_data=False, random_key=True)
-
-        # 3. Run a new example? Saved in all instances as current_run.pkl
-        observation = gym_env.reset(pickled=False, pickle_data=True, example=False, random_key=True)
-
-        # 4. Use a custom hardcoded state? May be some issues with data types and visualization.
-        # observation = gym_env.custom_state(state)
-
-        ######################################################
-
+        observation = gym_env.reset(coordinates, obs_chemical_shifts, noes, connectivity)
         terminated = False
 
         while not terminated:
+            gym_env.render()
             action = int(input())
             if action < num_resid:
                 if action not in observation['assignments'].values():
                     observation, reward, terminated, total_energy = gym_env.step(action)
 
+
+
+if __name__ == '__main__':
+    text_adventure()
+
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument('num_resid', type=int, help='Number of residues')
+#     args = parser.parse_args()
+
+#     num_resid = args.num_resid
+
+#     gym_env = GymEnv(num_resid)
+#     total_energy = math.inf
+
+#     while total_energy > 0:
+
+#         ###### Available options to work with right now ######
+
+#         # 1. Need to generate and save an example? Saved in all instances as fakedata_r{num_resid}.pkl
+#         # observation = gym_env.reset(pickled=False, pickle_data=True, random_key=False)
+
+#         # 2. Grab one of these previous examples? Make sure example exists with desired resid number.
+#         # observation = gym_env.reset(pickled=True, pickle_data=False, random_key=False)
+
+#         # 3. Run a new example? Saved in all instances as current_run.pkl
+#         # with cProfile.Profile() as pr:
+#         observation = gym_env.reset(pickled=False, pickle_data=True, example=False, random_key=False)
+#         # stats = pstats.Stats(pr)
+#         # stats.sort_stats('time').print_stats()
+
+#         # 4. Use a custom hardcoded state? May be some issues with data types and visualization.
+#         # observation = gym_env.custom_state(state)
+
+#         ######################################################
+
+#         terminated = False
+
+#         while not terminated:
+#             action = int(input())
+#             if action < num_resid:
+#                 if action not in observation['assignments'].values():
+#                     observation, reward, terminated, total_energy = gym_env.step(action)
+
+# if __name__ == '__main__':
+    # cProfile.run('noe_combinations()')
+    # test_run()
 # random generated set of 4
         # state = {
         #     "coords": [[0.35, 0.83, 0.89, 0.16, 0.034], [0.69, 0.12, 0.92, 0.41, 0.44], [0.05, 0.94, 0.51, 0.189, 0.62], [0.45, 0.06, 0.70, 0.63, 0.15]],
