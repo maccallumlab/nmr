@@ -6,7 +6,8 @@ from torch.utils.tensorboard import SummaryWriter
 import random
 
 
-def extract_data(pickle_file="fake_histories.pkl"):
+
+def extract_data(pickle_file="fake_histories_r20_1.pkl"):
     with open(pickle_file, "rb") as f:
         histories = pickle.load(f)
     return histories
@@ -24,13 +25,12 @@ def preprocess_data(histories):
     peak_to_assign = []
     correct_answer = []
 
-    # batch size needs to be reworked in here (not randomized - selects from start up until 'batch_size' index)
     for history in histories:
         # Predicted shifts
-        predicted_shifts_temp = [(i.H1, i.N15) for i in history["coords"]]
+        predicted_shifts_temp = [(i.H1, i.N15) for i in history["coordinates"]]
         predicted_shifts.append(predicted_shifts_temp)
         # Observed shifts
-        obs_chemical_shifts_temp = [(i.H1, i.N15) for i in history["actual_shifts"]]
+        obs_chemical_shifts_temp = [(i.H1, i.N15) for i in history["obs_chemical_shifts"]]
         obs_chemical_shifts.append(obs_chemical_shifts_temp)
         # NOEs
         noes.append(history["noes"])
@@ -56,8 +56,8 @@ def preprocess_data(histories):
             assignments.append(None)
 
         # Peak to assign
-        peak_to_assign.append(history["assign_shift"])
-        correct_answer.append(history["assign_shift"])
+        peak_to_assign.append(history["shift_to_assign"])
+        correct_answer.append(history["shift_to_assign"])
 
     return (
         predicted_shifts,
@@ -66,7 +66,7 @@ def preprocess_data(histories):
         close_dist,
         assignments,
         peak_to_assign,
-        correct_answer,
+        correct_answer
     )
 
 
@@ -103,8 +103,10 @@ def organize_nmr_inputs(histories, device):
 
 
 if __name__ == "__main__":
+    
     # Set device
-    device = "mps"
+    # device = "mps"
+    device ='cuda'
 
     # Set up TensorBoard
     writer = SummaryWriter()
