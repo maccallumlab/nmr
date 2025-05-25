@@ -1,68 +1,49 @@
-#unittest for fractional activations
-#has to be made into a class for it to work
-
 import unittest
+from itertools import chain
+
+from assignment_order import FractionalActivation
+
+
 
 class TestFracAct(unittest.TestCase):
 
-    def setUp(self):
-        self.frac_act = FracAct()
-
-#test for activation loop
-#expected to return the noe peak divided by the total number of different/unique noe peaks
-
+    # Test for activation loop
+    # Expected to return the target noe peak divided by the total number of different/unique noe peak options
     def test_activation_loop(self):
-        assign_order = []
-        noe = [(0, 1), (0, 2)]
-        target = 0
+        
+        cases = [
+            {'noe': [(0, 1), (0, 2)], 'noe_set': {0, 1, 2}, 'assign_order': [], 'target': 0, 'expected': 1/3, 'message': 'CASE 1: First assignment'},
+            {'noe': [(0, 1), (0, 2)], 'noe_set': {1, 2}, 'assign_order': [0], 'target': 0, 'expected': 0, 'message': 'CASE 2: Target already assigned'},
+            {'noe': [(0, 1), (0, 2)], 'noe_set': {2}, 'assign_order': [0, 1],'target': 2, 'expected': 1.0, 'message': 'CASE 3: Final assignment'},
+            {'noe': [(0, 1), (0, 2)], 'noe_set': {}, 'assign_order': [0, 1, 2], 'target': 0, 'expected': 0, 'message': 'CASE 4: Everything already assigned'},
+            {'noe': [(0, 1), (0, 2)], 'noe_set': {0, 1, 2}, 'assign_order': [], 'target': 3, 'expected': 0, 'message': 'CASE 5: Target not present in NOE'}
+            ]
 
-        result = self.frac_act.activation_loop(target, noe, assign_order)
-        expected = 1/3
+        for case in cases:
+            with self.subTest(message=case['message']):
+                frac_act = FractionalActivation(3, case['noe'])
+                result = frac_act.activation_loop(case['target'], case['noe_set'], case['assign_order'])
+                self.assertEqual(result, case['expected'])
 
-        self.assertEqual(result, expected)
-
-#test if each noe peak will be evaluated to give the fractional activation
-
-    def test_fractional_activation_of_all_noe_peaks(self):
-        num_resid = 3
-        noes = [[(0, 1), (0, 2)]]
-
-        result = self.frac_act.fractional_activation_summation(num_resid, noes)
-        expected = [1/3, 1/3, 1/3]
-
-        self.assertEqual(result, expected)
-
-#for more then one noe, the probabilities are summed
-
-    def test_fractional_activation_summation_of_noes(self):
-        num_resid = 4
-        noes = [(0, 1), (0, 2)], [(2,1),(1,1)], [(1,0),(3,2)]
-
-        result = self.frac_act.fractional_activation_summation(num_resid, noes)
-        expected = [7/12, 13/12, 13/12, 1/4]
-
-        self.assertEqual(result, expected)
-
-#according to the fractional activations calculated, should give the correct order
-#if it is a tie, then lowest value goes first
-
+    # According to the fractional activations calculated, should give the correct order
+    # If it is a tie, then lowest index goes first
     def test_fractional_activation_for_assignment_order(self):
-        num_resid = 4
-        noes = [(0, 1), (0, 2)], [(2,1),(1,1)], [(1,0),(3,2)]
+        
+        cases = [
+            {'restraints': ([[(0, 1), (0, 2)], [(2, 1), (1, 1)], [(1, 0), (3, 2)]]), 'num_resid': 4, 'expected': [1, 2, 0, 3], 'message': 'CASE 1: Acceptable order'},
+            {'restraints': ([[(0, 1), (0, 2)], [(2, 1), (1, 1)], [(1, 0), (3, 2)]]), 'num_resid': 5, 'expected': [1, 2, 0, 3, 4], 'message': 'CASE 2: Higher resid count --> Missing residues added last'},
+            # {'restraints': ([[(2, 3)], [(2, 1)], [(1, 0)], [(1, 3)], [(1, 0)], [(2, 3)], [(1, 3)], [(2, 0)]]), 'num_resid': 3, 'expected': [1, 3, 2, 0], 'message': 'CASE 2: Lower resid count --> Expected Failure'},
+            {'restraints': ([[(0, 6)], [(1, 4)], [(1, 6)], [(2, 3)], [(2, 3)], [(1, 4)], [], [(0, 6)], [], [(4, 8)]]), 'num_resid': 10, 'expected': [1, 4, 6, 0, 2, 3, 8, 5, 7, 9], 'message': 'CASE 3: Handling blank NOES (true case)'},
+            {'restraints': ([[(0, 3)], [(0, 1)], [(1, 2)], [(1, 3)], [(1, 2)], [(0, 3)], [(1, 3)], [(0, 2)]]), 'num_resid': 4, 'expected': [1, 3, 0, 2], 'message': 'CASE 4: Hand solved, single restraints'}
+            ]
 
-        result = self.frac_act.fractional_activation(num_resid, noes)
-        expected = [1, 2, 0, 3]
+        for case in cases:
+            with self.subTest(message=case['message']):
+                frac_act = FractionalActivation(case['num_resid'], case['restraints'])
+                result = frac_act.fractional_activation()
+                self.assertEqual(result, case['expected'])
 
-        self.assertEqual(result, expected)
 
-#if number of residues is higher than the number of peaks, then it will loop through to give first/lowest value peak ex. will give 0 for every additional residue
-#if number of residues is lower than the number of peaks, then it will return the first value again (0, in this case)
 
-    def test_fractional_activation_for_num_resid(self):
-        num_resid = 5
-        noes = [[(0, 1), (0, 2)]], [(2,1),(1,1)], [(1,0),(3,2)]
-
-        result = self.frac_act.fractional_activation(num_resid, noes)
-        expected = [1, 2, 0, 3]
-
-        self.assertEqual(result, expected)
+if __name__ == '__main__':
+    unittest.main()

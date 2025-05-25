@@ -1,55 +1,69 @@
 import unittest
+import numpy as np
+
+from energy import Energy
+
+
 
 class TestEnergyMethods(unittest.TestCase):
 
     def setUp(self):
-        self.energy = Energy()
+        self.coords = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9], [0.91, 0.92, 0.93], [0.95, 0.96, 0.97]] # x,y,z
+        self.energy = Energy(self.coords, 0, 0)
+        self.dist_grid = self.energy.calc_pdist()
 
-    #test for activated, if activated, the expected will be the energy calculation
+    # Test for NOE activation - if activated, the expected value will be the lowest energy calculated
     def test_energy_activated(self):
-
-        #random data
-        coords = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9], [0.91, 0.92, 0.93], [0.95,0.96, 0.97]]  #x,y,z
-        restraints = [[(2, 1),(0, 3)]]
+        restraint = [(2, 1), (0, 3)]
         assignments = {2: 1, 0: 3, 1: 2, 3: 4}
-
-        result = self.energy.get_energy(restraints, coords, assignments)
-        expected = 0.01019237886466845
+        
+        result = self.energy.calc_restraint_energy(assignments, restraint, self.dist_grid, 0.5)
+        expected = 0.0
 
         self.assertEqual(result, expected)
 
-    #test for not activated, if not activated, the expected will be 0
+    # Test if NOE not activated - if not activated, the expected value will be 0 (no energy calculated)
     def test_energy_not_activated(self):
-
-        #random data
-        coords = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7,0.8,0.9], [0.91, 0.92, 0.93], [0.95,0.96, 0.97]]  #x,y,z
         restraints = [[(2, 1), (0, 3)]]
-        assignments = {0:3}
+        assignments = {0: 3}
 
-        result = self.energy.get_energy(restraints, coords, assignments)
+        result = self.energy.get_total_energy(restraints, assignments, self.dist_grid)
         expected = 0
 
         self.assertEqual(result, expected)
 
-    #test for sum of all energies for more then one activated NOE, the expected will be the total energy
-    #also works for NOE not activated, expected will be the same as test_energy_activated
-    def test_energy_sum(self):
-        coords = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9], [0.1, 0.92, 0.93], [0.95,0.96, 0.97]]  #x,y,z
-        restraints = [(2, 1), (0, 3)], [(1, 2)]
+    # Test for sum of all energies for one activated NOE, the expected will be single restraint calculation
+    def test_energy_sum_not_activated(self):
+        restraints = [[(2, 1), (0, 3)], [(1, 2)]]
         assignments = {2: 1, 0: 3, 1: 2}
 
-        result = self.energy.get_energy(restraints, coords, assignments)
-        expected = 0.5263195283063458
+        result = self.energy.get_total_energy(restraints, assignments, self.dist_grid)
+        expected = 0.01019237886466845
 
         self.assertEqual(result, expected)
 
-    #energy calc - pass
+    # Test for sum of all energies for more then one activated NOE, the expected will be the sum of the two restraints
+    def test_energy_sum_activated(self):
+        restraints = [[(2, 1), (0, 3)], [(1, 2)]]
+        assignments = {2: 1, 0: 3, 1: 2, 3: 0}
+
+        result = self.energy.get_total_energy(restraints, assignments, self.dist_grid)
+        expected = 0.01019237886466845*2
+
+        self.assertEqual(result, expected)
+
+    # Test for flat bottom restraint, distance above tolerance
     def test_flat_bottom(self):
-        tolerance = 1
-        x = 5 #distance
+        tolerance = 0.5
+        x = 5 # distance
         result = self.energy.flat_bottom(x, tolerance)
-        expected = 20 # x^2 - tolerance*x
+        expected = 22 # x^2 - tolerance*x
         self.assertEqual(result, expected)
+
+
+
+if __name__ == '__main__':
+    unittest.main()
 
     '''
     calculations for the expected of each unittest
