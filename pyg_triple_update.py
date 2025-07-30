@@ -23,141 +23,253 @@ data['SHIFT'].f = torch.zeros((2, 1), dtype=torch.float32)
 data['TRIPLE'].x = torch.tensor(())
 
 # Edges
-data['NOE', 'NOE_extract', 'TRIPLE'].edge_index = torch.tensor([[0], [0]])
-data['RES', 'NH1_extract', 'TRIPLE'].edge_index = torch.tensor([[0], [0]])
-data['RES', 'NH2_extract', 'TRIPLE'].edge_index = torch.tensor([[1], [0]])
-data['SHIFT', 'NH1_extract', 'TRIPLE'].edge_index = torch.tensor([[0], [0]])
-data['SHIFT', 'NH2_extract', 'TRIPLE'].edge_index = torch.tensor([[1], [0]])
-data['TRIPLE', 'update', 'TRIPLE'].edge_index = torch.tensor([[0], [0]]) # self loop
+data['NOE', 'NOE_extract', 'TRIPLE'].edge_index = torch.tensor([[0, 1], [0, 1]])
+data['RES', 'NH1_extract', 'TRIPLE'].edge_index = torch.tensor([[0, 1], [0, 1]])
+data['RES', 'NH2_extract', 'TRIPLE'].edge_index = torch.tensor([[1, 0], [0, 1]])
+data['SHIFT', 'NH1_extract', 'TRIPLE'].edge_index = torch.tensor([[0, 1], [0, 1]])
+data['SHIFT', 'NH2_extract', 'TRIPLE'].edge_index = torch.tensor([[1, 0], [0, 1]])
 
-# Generate reverse for message passing
-data = T.ToUndirected()(data)
+data['TRIPLE', 'update', 'TRIPLE'].edge_index = torch.tensor([[0, 1], [0, 1]]) # self loop
 
-def triple_in(data, node, edge):
-    """
-    Source node to triple via indexing.
-    """
-    # Spatial features
-    xi = data[node].x[data[edge].edge_index[0]]
-    # Non-spatial features
-    fi = data[node].f[data[edge].edge_index[0]]
+data['TRIPLE', 'NOE_add', 'NOE'].edge_index = torch.tensor([[0, 1], [0, 1]])
+data['TRIPLE', 'NH1_add', 'RES'].edge_index = torch.tensor([[0, 1], [0, 1]])
+data['TRIPLE', 'NH2_add', 'RES'].edge_index = torch.tensor([[0, 1], [1, 0]])
+data['TRIPLE', 'res1_add', 'RES'].edge_index = torch.tensor([[0, 1], [0, 1]])
+data['TRIPLE', 'res2_add', 'RES'].edge_index = torch.tensor([[0, 1], [1, 0]])
+data['TRIPLE', 'NH1_add', 'SHIFT'].edge_index = torch.tensor([[0, 1], [0, 1]])
+data['TRIPLE', 'NH2_add', 'SHIFT'].edge_index = torch.tensor([[0, 1], [1, 0]])
 
-    return xi, fi
+class TripleIn():
+    def __init__(self, data):
+        self.data = data
+
+    def grab_node(self, node_type, edge_type):
+        """
+        Source node to triple via indexing.
+        """
+        # Spatial features
+        xi = self.data[node_type].x[self.data[edge_type].edge_index[0]]
+        # Non-spatial features
+        fi = self.data[node_type].f[self.data[edge_type].edge_index[0]]
+
+        return xi, fi
+    
+    def construct_triple(self, edge_type1, edge_type2, edge_type3):
+        """
+        Constructs triple based on type:
+            - residue, residue, NOE
+            - residue, shift, NOE
+            - shift, residue, NOE
+            - shift, shift, NOE
+        """
+        x1, f1 = self.grab_node(node_type=edge_type1[0], edge_type=edge_type1)
+        x2, f2 = self.grab_node(node_type=edge_type2[0], edge_type=edge_type2)
+        x3, f3 = self.grab_node(node_type=edge_type3[0], edge_type=edge_type3)
+
+        return x1, x2, x3, f1, f2, f3
 
 
 class TripleUpdateResResNoe(MessagePassing):
+    """
+    Message passing class for triple self updates (only set up for residue, residue, NOE triple type).
+    Residue, residue, NOE triple type is the only one that deviates in calculations (coordinate calculation used), 
+    other three would have same base set up with some differences in indexing.
+    Pairwise calculations would use the same functions but would have a different message passing scheme.
+    
+    Options --> if/else statements for triples because of similarity, different class for pairwise?
+    """
     def __init__(self):
         super().__init__(aggr='add')
         
-        self.NOE_N1 = 0
-        self.NOE_H1 = 1
-        self.NOE_H2 = 2
+        # Input index organization - slices to keep proper tensor dimension
+        self.NOE_N1 = slice(0,1)
+        self.NOE_H1 = slice(1,2)
+        self.NOE_H2 = slice(2,3)
 
-        self.RES_X = 0
-        self.RES_Y = 1
-        self.RES_Z = 2
-        self.RES_N = 3
-        self.RES_H = 4
+        self.RES_XYZ = slice(0,3)
+        self.RES_N = slice(3,4)
+        self.RES_H = slice(4,5)
 
-        self.SHIFT_N = 0
-        self.SHIFT_H = 1
+        self.SHIFT_N = slice(0,1)
+        self.SHIFT_H = slice(1,2)
 
         self.hidden = 64
 
         self.mlp1 = nn.Sequential(
                     nn.Linear(9, self.hidden),
                     nn.ReLU(),
-                    nn.Linear(self.hidden, 9))
-        self.mlp2 = nn.Sequential(
-                    nn.Linear(3, self.hidden),
-                    nn.ReLU(),
-                    nn.Linear(self.hidden, 3))
+                    nn.Linear(self.hidden, 16))
 
     def calc_noe_difference(self, x1, x2, noe, N1, H1, H2):
-        diff_N = (noe[:, self.NOE_N1] - x1[:, N1]).unsqueeze(1) # N
-        diff_H1 = (noe[:, self.NOE_H1] - x1[:, H1]).unsqueeze(1) # H'
-        diff_H2 = (noe[:, self.NOE_H2] - x2[:, H2]).unsqueeze(1) # H"
+        """
+        Calculates shift difference between NOE and residue/measured shifts (direct/indirect only reverse option is available by index).
+        """
+        diff_N = (noe[:, self.NOE_N1] - x1[:, N1]) # N [n, 1]
+        diff_H1 = (noe[:, self.NOE_H1] - x1[:, H1]) # H' [n, 1]
+        diff_H2 = (noe[:, self.NOE_H2] - x2[:, H2]) # H" [n, 1]
         return diff_N, diff_H1, diff_H2
-    
+
+    def calc_shift_difference(self, x1, x2, N1, H1):
+        """
+        Calculates shift difference between residue/measured shifts.
+        """
+        diff_N = (x1[:, N1] - x2[:, N1]) # N [n, 1]
+        diff_H = (x1[:, H1] - x2[:, H1]) # H [n, 1]
+        return diff_N, diff_H
+
     def calc_res_distance(self, x1, x2):
-        rel_positions = ((x1[:, self.RES_X:self.RES_Z+1]) - (x2[:, self.RES_X:self.RES_Z+1])).squeeze(dim=-1)
-        distances = torch.norm(rel_positions, dim=-1, keepdim=True)**2
-        return rel_positions, distances
+        """
+        Calculates relative distance between residues and this value squared for equivariant calculations. 
+        """
+        rel_dist = ((x1[:, self.RES_XYZ]) - (x2[:, self.RES_XYZ])) # [n, 3]
+        dist2 = torch.norm(rel_dist, dim=-1, keepdim=True)**2 # [n, 1]
+        return rel_dist, dist2
         
     def forward(self, x1, x2, x3, f1, f2, f3, edge_index):
         out = self.propagate(edge_index, x1=x1, x2=x2, x3=x3, f1=f1, f2=f2, f3=f3)
         return out
 
-    def message(self, x1_i, x1_j, x2_j, x3_j, f1_j, f2_j, f3_j):
+    def message(self, x1_j, x2_j, x3_j, f1_j, f2_j, f3_j):
         # Residue distances
-        rel_positions, distances = self.calc_res_distance(x1_j, x2_j)
+        rel_dist, dist2 = self.calc_res_distance(x1_j, x2_j)
 
         # Differences relative to NOE shifts (N, H', H")
-        # SHIFT 1
-        diff1, diff2, diff3 = self.calc_noe_difference(x1_j, x1_j, x3_j, self.RES_N, self.RES_H, self.RES_H)
-        # SHIFT 2
-        diff4, diff5, diff6 = self.calc_noe_difference(x2_j, x2_j, x3_j, self.RES_N, self.RES_H, self.RES_H)
+        diff1, diff2, diff3 = self.calc_noe_difference(x1_j, x2_j, x3_j, self.RES_N, self.RES_H, self.RES_H)
 
-        # Inputs for MLP 
-        # (N, H', H", features)
-        mlp_input1 = (torch.cat((diff1, diff2, diff3, diff4, diff5, diff6, f1_j, f2_j, f3_j), dim=-1))
-        # (distances, features)
-        mlp_input2 = (torch.cat((distances, f1_j, f2_j), dim=-1))
+        # Shift differences
+        diff4, diff5 = self.calc_shift_difference(x1_j, x2_j, self.RES_N, self.RES_H)
 
-        # MLP
-        mlp_out1 = self.mlp1(mlp_input1)
-        mlp_out2 = self.mlp2(mlp_input2)
+        # Input for MLP 
+        # (N, H', H", N, H, dist2, features)
+        mlp_in = (torch.cat((diff1, diff2, diff3, diff4, diff5, dist2, f1_j, f2_j, f3_j), dim=-1)) # [n, 9]
+
+        # Output from MLP
+        # Out should include values for each 'change' wanting to make
+        # (N, H', H", N1, H1, N2, H2, dist1, dist2, features)
+        mlp_out = self.mlp1(mlp_in) # [n, 16]
 
         # NOE deltas
-        delta1x = (diff1 * mlp_out1[:, 0].unsqueeze(1)) + (diff4 * mlp_out1[:, 3].unsqueeze(1)) # N
-        delta2x = (diff2 * mlp_out1[:, 1].unsqueeze(1)) + (diff5 * mlp_out1[:, 4].unsqueeze(1)) # H'
-        delta3x = (diff3 * mlp_out1[:, 2].unsqueeze(1)) + (diff6 * mlp_out1[:, 5].unsqueeze(1)) # H"
-        deltaf3 = mlp_out1[:, 8].unsqueeze(1) # features
+        delta1x = (diff1 * mlp_out[:, 0:1]) # N [n, 1]
+        delta2x = (diff2 * mlp_out[:, 1:2]) # H' [n, 1]
+        delta3x = (diff3 * mlp_out[:, 2:3]) # H" [n, 1]
 
-        # SHIFT deltas
-        # SHIFT1
-        delta4x = -diff1 * mlp_out1[:, 0].unsqueeze(1) # N1
-        delta5x = (-diff2 * mlp_out1[:, 1].unsqueeze(1)) + (-diff3 * mlp_out1[:, 2].unsqueeze(1)) # H1
-        deltaf1 = mlp_out1[:, 6]
-        # SHIFT2
-        delta6x = -diff4 * mlp_out1[:, 3].unsqueeze(1) # N2
-        delta7x = (-diff5 * mlp_out1[:, 4].unsqueeze(1)) + (-diff6 * mlp_out1[:, 5].unsqueeze(1)) # H2
-        deltaf2 = mlp_out1[:, 7]
+        # SHIFT deltas residue
+        delta4x = (diff4 * mlp_out[:, 3:4]) # N1 [n, 1]
+        delta5x = (diff5 * mlp_out[:, 4:5]) # H1 [n, 1]
+        delta6x = (diff4 * mlp_out[:, 5:6]) # N2 [n, 1]
+        delta7x = (diff5 * mlp_out[:, 6:7]) # H2 [n, 1]
 
-        # DISTANCE deltas?
-        rel_positions = rel_positions
-        delta8x = (rel_positions * (mlp_out2[:, 0]).unsqueeze(1))
-        deltaf1 = (deltaf1 + mlp_out2[:, 1]).unsqueeze(1)
-        deltaf2 = (deltaf2 + mlp_out2[:, 2]).unsqueeze(1)
+        # DISTANCE deltas
+        delta12x = (rel_dist * (mlp_out[:, 7:10])) # [n, 3]
+        delta13x = (rel_dist * (mlp_out[:, 10:13])) # [n, 3]
 
-        return (torch.cat((delta1x, delta2x, delta3x, delta4x, delta5x, delta6x, delta7x, delta8x, deltaf1, deltaf2, deltaf3), dim=-1))
+        # FEATURE deltas
+        delta1f = mlp_out[:, 13:14] # [n, 1]
+        delta2f = mlp_out[:, 14:15] # [n, 1]
+        delta3f = mlp_out[:, 15:] # [n, 1]
 
-    def update(self, aggr_out, x1, x2, x3, f1, f2, f3):
-        update_NOE, update_x1, update_x2, update_f1, update_f2, update_f3 = aggr_out[:, 0:3], torch.cat((aggr_out[:, 7:10], aggr_out[:, 3:5]), dim=-1), torch.cat((aggr_out[:, 7:10]*-1, aggr_out[:, 5:7]), dim=-1), aggr_out[:, 10], aggr_out[:, 11], aggr_out[:, 12]
-        return (x3 + update_NOE, 
-        x1 + update_x1, 
-        x2 + update_x2, 
-        f1 + update_f1, 
-        f2 + update_f2, 
-        f3 + update_f3)
+        return torch.cat((delta1x, delta2x, delta3x, delta4x, delta5x, delta6x, delta7x, delta12x, delta13x, delta1f, delta2f, delta3f), dim=-1) # [n, 16]
 
-        # return aggr_out
+    def update(self, aggr_out):
+        # res involved in multiple different triples --> need to add across these (in different message passing class)
+        # output shapes: noe[n, 3], shift1[n, 2], shift2[n, 2], dist1[n, 3], dist2[n, 3], f1[n, 1], f2[n, 1], f3[n, 1]
+        delta_noe, delta_shift1, delta_shift2, delta_dist1, delta_dist2, delta_f1, delta_f2, delta_f3 = aggr_out[:, 0:3], aggr_out[:, 3:5], aggr_out[:, 5:7], aggr_out[:, 7:10], aggr_out[:, 10:13], aggr_out[:, 13:14], aggr_out[:, 14:15], aggr_out[:, 15:]
+        return delta_shift1, delta_shift2, delta_noe, delta_dist1, delta_dist2, delta_f1, delta_f2, delta_f3
+
+
+
+class TripleMessagePass(MessagePassing):
+    """
+    Standard message passing class for outgoing triple messages.
+    """
+    def __init__(self):
+        super().__init__(aggr='add')
+
+    def forward(self, x_source, x_target, edge_index):
+        # SIZE (n, m) (source, target)
+        return self.propagate(edge_index=edge_index, x=(x_source, x_target), size=(x_source.size(0), x_target.size(0)))
+
+    def message(self, x_j):
+        return x_j
+
+    def update(self, aggr_out, x):
+        # non-spatial features can also be included in same call but requires more work if they're not being updated (don't want to do residue feature updates 2x - only call once on shifts or coordinates)
+        # x_val, f_val = aggr_out[:, :len(x[1][1])], aggr_out[:, len(x[1][1]):]
+        # outf = f_val + f[1]
+        # outx = x_val + x[1]
+
+        out = aggr_out + x[1]
+        return out
+
+    
+
+class TripleOut():
+    def __init__(self, data):
+        self.data = data
+        self.triple_messgage = TripleMessagePass()
+
+    def update_data(self, x_source, f_source, edge_type, x_index, update_f=True):
+        """
+        Calls message passing and directly updates the heterodata object based on target.
+        """
+        source, edge, target = edge_type
+        edge_index = self.data[edge_type].edge_index
+
+        # Message passing/update for spatial features
+        self.data[target].x[:, x_index] = self.triple_messgage(x_source, self.data[target].x[:, x_index], edge_index)
+        
+        # Message passing/update for non-spatial features if needed (don't want a duplicate update for residue features)
+        if update_f:
+            self.data[target].f = self.triple_messgage(f_source, self.data[target].f, edge_index)
+
+        return self.data
+
+
+
+class ProteinGNN():
+    """
+    Test class that:
+        - construct the triple based on edge types (only res, res, NOE as example)
+        - self updates
+        - sends message back to original nodes (note number of reverse edges depends on triple type)
+
+    Can make separate classes to construct each triple type and do following updates or generalize this as a base class?
+    """
+    def __init__(self, data):
+        self.data = data
+        self.triple_in = TripleIn(data)
+        self.triple_self = TripleUpdateResResNoe() # update would need to match data coming in
+        self.triple_out = TripleOut(data)
+
+        # Original data object indexing
+        self.NOE = slice(0,3)
+        self.RES_XYZ = slice(0,3)
+        self.RES_NH = slice(3,5)
+        self.SHIFT_NH = slice(0,2)
+    
+    def forward(self):
+        # Triple in
+        x1, x2, x3, f1, f2, f3 = self.triple_in.construct_triple(('RES', 'NH1_extract', 'TRIPLE'), ('RES', 'NH2_extract', 'TRIPLE'), ('NOE', 'NOE_extract', 'TRIPLE'))
+        
+        # Self update
+        delta_shift1, delta_shift2, delta_noe, delta_dist1, delta_dist2, deltaf1, deltaf2, deltaf3 = self.triple_self(x1, x2, x3, f1, f2, f3, self.data['TRIPLE', 'update', 'TRIPLE'].edge_index)
+        
+        # Triple out (typically 3 reverse edges - 5 if coordinates are present)
+        self.data = self.triple_out.update_data(delta_shift1, deltaf1, ('TRIPLE', 'NH1_add', 'RES'), self.RES_NH)
+        self.data = self.triple_out.update_data(delta_shift2, deltaf2, ('TRIPLE', 'NH2_add', 'RES'), self.RES_NH)
+        self.data = self.triple_out.update_data(delta_noe, deltaf3, ('TRIPLE', 'NOE_add', 'NOE'), self.NOE)
+        self.data = self.triple_out.update_data(delta_dist1, deltaf1, ('TRIPLE', 'res1_add', 'RES'), self.RES_XYZ, update_f=False)
+        self.data = self.triple_out.update_data(delta_dist2, deltaf2, ('TRIPLE', 'res2_add', 'RES'), self.RES_XYZ, update_f=False)
+
+        return self.data
+
 
 
 if __name__ == "__main__":
+    print(f"original RES: {data['RES']}")
+    print(f"original NOE: {data['NOE']}")
+    testgnn = ProteinGNN(data)
+    data = testgnn.forward()
+    print(f"updated RES: {data['RES']}")
+    print(f"updated NOE: {data['NOE']}")
 
-    # Can grab these from data - would need some form of string input for each combination (node and edge)
-    # data.node_types
-    # data.edge_types
-    node1, node2, node3 = 'RES', 'RES', 'NOE'
-    edge1, edge2, edge3 = ('RES', 'NH1_extract', 'TRIPLE'), ('RES', 'NH2_extract', 'TRIPLE'), ('NOE', 'NOE_extract', 'TRIPLE')
-
-    # Data --> Triple node
-    x1, f1 = triple_in(data, node=node1, edge=edge1)
-    x2, f2 = triple_in(data, node=node2, edge=edge2)
-    x3, f3 = triple_in(data, node=node3, edge=edge3)
-
-    gnn = TripleUpdateResResNoe()
-
-    out = gnn(x1, x2, x3, f1, f2, f3, data['TRIPLE', 'update', 'TRIPLE'].edge_index)
-    print(f'Update: {out}')
