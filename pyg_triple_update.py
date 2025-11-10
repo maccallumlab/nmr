@@ -6,44 +6,51 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.nn import MessagePassing
 from torch_geometric.data import HeteroData
 import torch.nn as nn
+import numpy as np
+
+import matplotlib.pyplot as plt
+import matplotlib.animation
 
 from itertools import product
 import pickle
 
-# Set up data
-data = HeteroData()
+# # Set up data
+# data = HeteroData()
 
-# Spatial and non-spatial
-data['NOE'].x = torch.tensor([[1, 2, 3], [4, 5, 6], [7, 8 , 9]], dtype=torch.float32)
-data['NOE'].f = torch.zeros((3, 1), dtype=torch.float32)
-data['RES'].x = torch.tensor([[7, 8, 9, 1, 2], [10, 11, 12, 7, 3]], dtype=torch.float32)
-data['RES'].f = torch.zeros((2, 1), dtype=torch.float32)
-data['SHIFT'].x = torch.tensor([[4, 5], [1, 2]], dtype=torch.float32)
-data['SHIFT'].f = torch.zeros((2, 1), dtype=torch.float32)
+# # Spatial and non-spatial
+# data['NOE'].x = torch.tensor([[1, 2, 3], [4, 5, 6], [7, 8 , 9]], dtype=torch.float32)
+# data['NOE'].f = torch.zeros((3, 2), dtype=torch.float32)
+# data['RES'].x = torch.tensor([[7, 8, 9, 1, 2], [10, 11, 12, 7, 3]], dtype=torch.float32)
+# data['RES'].f = torch.zeros((2, 2), dtype=torch.float32)
+# data['SHIFT'].x = torch.tensor([[4, 5], [1, 2]], dtype=torch.float32)
+# data['SHIFT'].f = torch.zeros((2, 2), dtype=torch.float32)
 
-# Triples (nothing is ever stored in these - they are placeholders to be used in edge types)
-data['TRIPLE0'].x = torch.zeros((1, 1), dtype=torch.float32)
-data['TRIPLE1'].x = torch.zeros((1, 1), dtype=torch.float32)
-data['TRIPLE2'].x = torch.zeros((1, 1), dtype=torch.float32)
-data['TRIPLE3'].x = torch.zeros((1, 1), dtype=torch.float32)
+# # Triples (nothing is ever stored in these - they are placeholders to be used in edge types)
+# data['TRIPLE0'].x = torch.zeros((1, 1), dtype=torch.float32)
+# data['TRIPLE1'].x = torch.zeros((1, 1), dtype=torch.float32)
+# data['TRIPLE2'].x = torch.zeros((1, 1), dtype=torch.float32)
+# data['TRIPLE3'].x = torch.zeros((1, 1), dtype=torch.float32)
 
-data['VALUE_NOE'].x = torch.zeros(1, 1, dtype=torch.float32) # has to be num graphs batched?
-data['VALUE_SHIFT'].x = torch.zeros(1, 1, dtype=torch.float32)
-data['VALUE_RES'].x = torch.zeros(1, 1, dtype=torch.float32)
+# data['VALUE_NOE'].x = torch.zeros(1, 1, dtype=torch.float32) # has to be num graphs batched?
+# data['VALUE_SHIFT'].x = torch.zeros(1, 1, dtype=torch.float32)
+# data['VALUE_RES'].x = torch.zeros(1, 1, dtype=torch.float32)
 
 
 
 class ConstructNodes():
-    # def __init__(self, histories):
-        # self.histories = histories
+    """
+    Builds graph nodes from input
+    """
+    def __init__(self, device):
+        self.device = device
 
     def construct_data_nodes(self, data, histories):
-        data['NOE'].x = torch.tensor(histories['noes'], dtype=torch.float32)
-        data['NOE'].f = torch.zeros((len(histories['noes']), 1), dtype=torch.float32)
-        data['SHIFT'].x = torch.tensor(histories['obs_chemical_shifts'], dtype=torch.float32)
-        data['SHIFT'].f = torch.zeros((len(histories['obs_chemical_shifts']), 1), dtype=torch.float32)
-        data['RES'].x = torch.tensor(histories['coordinates'], dtype=torch.float32)
-        data['RES'].f = torch.zeros((len(histories['coordinates']), 1), dtype=torch.float32)
+        data['NOE'].x = torch.tensor(histories['noes'], dtype=torch.float32, device=self.device)
+        data['NOE'].f = torch.zeros((len(histories['noes']), 2), dtype=torch.float32, device=self.device)
+        data['SHIFT'].x = torch.tensor(histories['obs_chemical_shifts'], dtype=torch.float32, device=self.device)
+        data['SHIFT'].f = torch.zeros((len(histories['obs_chemical_shifts']), 2), dtype=torch.float32, device=self.device)
+        data['RES'].x = torch.tensor(histories['coordinates'], dtype=torch.float32, device=self.device)
+        data['RES'].f = torch.zeros((len(histories['coordinates']), 2), dtype=torch.float32, device=self.device)
         return data
     
     def construct_node_features(self, data, histories):
@@ -65,16 +72,16 @@ class ConstructNodes():
         """
         Generates triple node types. Nothing is ever stored in these - they are simply placeholders to construct/use in edge types.
         """
-        data['TRIPLE0'].x = torch.zeros((1, 1), dtype=torch.float32)
-        data['TRIPLE1'].x = torch.zeros((1, 1), dtype=torch.float32)
-        data['TRIPLE2'].x = torch.zeros((1, 1), dtype=torch.float32)
-        data['TRIPLE3'].x = torch.zeros((1, 1), dtype=torch.float32)
+        data['TRIPLE0'].x = torch.zeros((1, 1), dtype=torch.float32, device=self.device)
+        data['TRIPLE1'].x = torch.zeros((1, 1), dtype=torch.float32, device=self.device)
+        data['TRIPLE2'].x = torch.zeros((1, 1), dtype=torch.float32, device=self.device)
+        data['TRIPLE3'].x = torch.zeros((1, 1), dtype=torch.float32, device=self.device)
         return data
     
     def construct_value_nodes(self, data):
-        data['VALUE_NOE'].x = torch.zeros(1, 1, dtype=torch.float32) # has to be num graphs batched?
-        data['VALUE_SHIFT'].x = torch.zeros(1, 1, dtype=torch.float32)
-        data['VALUE_RES'].x = torch.zeros(1, 1, dtype=torch.float32)
+        data['VALUE_NOE'].x = torch.zeros(1, 1, dtype=torch.float32, device=self.device) # has to be num graphs batched?
+        data['VALUE_SHIFT'].x = torch.zeros(1, 1, dtype=torch.float32, device=self.device)
+        data['VALUE_RES'].x = torch.zeros(1, 1, dtype=torch.float32, device=self.device)
         return data
     
     def construct_data(self, histories):
@@ -82,17 +89,18 @@ class ConstructNodes():
         data = self.construct_data_nodes(data, histories)
         data = self.construct_triple_nodes(data)
         data = self.construct_value_nodes(data)
-        # data = self.construct_node_features(data, histories) # need to sort out all features first across types (consistent or not?)
+        data = self.construct_node_features(data, histories) # need to sort out all features first across types (consistent or not?)
         return data
 
 
 
 class ConstructEdges():
-    def __init__(self, data):
+    def __init__(self, data, device):
         self.data = data
         self.num_noe = len(data['NOE'].x)
         self.num_shift = len(data['SHIFT'].x)
         self.num_res = len(data['RES'].x)
+        self.device = device
     
     def get_triple_edges(self, source1, source2):
         """
@@ -100,12 +108,12 @@ class ConstructEdges():
         Combinations occur along columns into a triple node.
         """
         combo = list(product(range(self.num_noe), range(source1), range(source2)))
-        combo_tensor = torch.tensor(combo)
+        combo_tensor = torch.tensor(combo, device=self.device)
 
         # Switches tensor dimension for source (columns set up for each edge [0,0,0] --> [0],[0],[0])
         source_nodes = torch.transpose(combo_tensor, 0, 1)
         # Repeats target edges for number of occurences in source (3 for the triple in this instance, to be assigned to each incoming node type)
-        target_nodes = torch.tensor(range(len(source_nodes[0]))).repeat(len(source_nodes), 1)
+        target_nodes = torch.tensor(range(len(source_nodes[0])), device=self.device).repeat(len(source_nodes), 1)
 
         # print(torch.stack([source_nodes, target_nodes], dim=0))
         return torch.stack([source_nodes, target_nodes], dim=0)
@@ -114,21 +122,23 @@ class ConstructEdges():
         """
         Grabs index combinations between shifts and residues and orders these into source and target indices for the edges.
         """
-        shift = torch.arange(0, self.num_shift)
-        resid = torch.arange(0, self.num_res)
-
+        # shift = torch.arange(0, self.num_shift)
+        shift = np.nonzero(self.data['SHIFT'].f[:, 0])[0] # need to specify if it's the shift being assigned
+        resid = torch.arange(0, self.num_res, device=self.device)
+        
         shift_repeats = shift.repeat_interleave(self.num_res)
-        resid_repeats = resid.repeat(self.num_shift)
+        # resid_repeats = resid.repeat(self.num_shift)
+        resid_repeats = resid
         return torch.stack((resid_repeats, shift_repeats), dim=0)
     
     def get_batch_edges(self):
-        shift = torch.arange(0, self.num_shift)
-        noe = torch.arange(0, self.num_noe)
-        resid = torch.arange(0, self.num_res)
+        shift = torch.arange(0, self.num_shift, device=self.device)
+        noe = torch.arange(0, self.num_noe, device=self.device)
+        resid = torch.arange(0, self.num_res, device=self.device)
 
-        shift_repeats = torch.zeros(self.num_shift).long()
-        noe_repeats = torch.zeros(self.num_noe).long()
-        resid_repeats = torch.zeros(self.num_res).long()
+        shift_repeats = torch.zeros(self.num_shift, device=self.device).long()
+        noe_repeats = torch.zeros(self.num_noe, device=self.device).long()
+        resid_repeats = torch.zeros(self.num_res, device=self.device).long()
 
         self.data['SHIFT', 'SHIFT_extract', f'VALUE_SHIFT'].edge_index = torch.stack((shift, shift_repeats), dim=0)
         self.data['NOE', 'NOE_extract', f'VALUE_NOE'].edge_index = torch.stack((noe, noe_repeats), dim=0)
@@ -166,7 +176,7 @@ class ConstructEdges():
 
         # Edges for self loop 
         self.data[f'TRIPLE{triple_num}', 'update', f'TRIPLE{triple_num}'].edge_index = torch.stack([edges_in[1, 0], edges_in[1, 0]], dim=0)
-        
+
         if triple_num == 0:
             self.data['RES', 'pair', 'SHIFT'].edge_index = self.get_pairwise_edges() # pairwise edges - no message passing
         return self.data
@@ -177,6 +187,7 @@ class ConstructEdges():
         self.data = self.get_edges(2, ('SHIFT', 'RES', 'NOE'))
         self.data = self.get_edges(3, ('SHIFT', 'SHIFT', 'NOE'))
         self.data = self.get_batch_edges()
+        # print(self.data['RES', 'pair', 'SHIFT'].edge_index)
         return self.data
 
 
@@ -260,23 +271,24 @@ class TripleUpdate(MessagePassing):
     """
     Message passing class for triple self updates.
     """
-    def __init__(self):
+    def __init__(self, device):
         super().__init__(aggr='add')
         self.calc_manager = CalculationManager()
+        self.device = device
 
         self.hidden = 64
 
         self.mlp1 = nn.Sequential(
-                    nn.Linear(9, self.hidden),
+                    nn.Linear(12, self.hidden, device=self.device),
                     nn.ReLU(),
-                    nn.Linear(self.hidden, 16),
-                    nn.LayerNorm(16))
+                    nn.Linear(self.hidden, 19, device=self.device),
+                    nn.LayerNorm(19, device=self.device))
         
         self.mlp2 = nn.Sequential(
-                    nn.Linear(8, self.hidden),
+                    nn.Linear(11, self.hidden, device=self.device),
                     nn.ReLU(),
-                    nn.Linear(self.hidden, 10),
-                    nn.LayerNorm(10))
+                    nn.Linear(self.hidden, 13, device=self.device),
+                    nn.LayerNorm(13, device=self.device))
     
     def resresnoe_message(self, x1_j, x2_j, x3_j, f1_j, f2_j, f3_j, x12_j, x22_j):
         """
@@ -316,10 +328,10 @@ class TripleUpdate(MessagePassing):
         delta13x = (rel_dist * (mlp_out[:, 10:13]))
 
         # FEATURE deltas [n, 1]
-        delta1f = mlp_out[:, 13:14]
-        delta2f = mlp_out[:, 14:15] 
-        delta3f = mlp_out[:, 15:]
-        return torch.cat((delta1x, delta2x, delta3x, delta4x, delta5x, delta6x, delta7x, delta12x, delta13x, delta1f, delta2f, delta3f), dim=-1) # [n, 16]
+        delta1f = mlp_out[:, 13:15]
+        delta2f = mlp_out[:, 15:17] 
+        delta3f = mlp_out[:, 17:]
+        return torch.cat((delta1x, delta2x, delta3x, delta4x, delta5x, delta6x, delta7x, delta12x, delta13x, delta1f, delta2f, delta3f), dim=-1) # [n, 16] [n, 19]
     
     def shiftshiftnoe_message(self, x1_j, x2_j, x3_j, f1_j, f2_j, f3_j):
         """
@@ -352,10 +364,10 @@ class TripleUpdate(MessagePassing):
         delta7x = (diff5 * mlp_out[:, 6:7]) # H2
 
         # FEATURE deltas [n, 1]
-        delta1f = mlp_out[:, 7:8]
-        delta2f = mlp_out[:, 8:9] 
-        delta3f = mlp_out[:, 9:]
-        return torch.cat((delta1x, delta2x, delta3x, delta4x, delta5x, delta6x, delta7x, delta1f, delta2f, delta3f), dim=-1) # [n, 10]
+        delta1f = mlp_out[:, 7:9]
+        delta2f = mlp_out[:, 9:11] 
+        delta3f = mlp_out[:, 11:]
+        return torch.cat((delta1x, delta2x, delta3x, delta4x, delta5x, delta6x, delta7x, delta1f, delta2f, delta3f), dim=-1) # [n, 10] [n, 13]
     
     def forward(self, x1, x12, x2, x22, x3, f1, f2, f3, edge_index):
         out = self.propagate(edge_index, x1=x1, x2=x2, x3=x3, f1=f1, f2=f2, f3=f3, x12=x12, x22=x22) # not sure how to deal with size here
@@ -371,12 +383,12 @@ class TripleUpdate(MessagePassing):
     def update(self, aggr_out, x12, x22):
         # residue based triple type will have two sets of coordinates (x12_j and x22_j) where shifts will have nonetype
         if x12 != None and x22 != None:
-            # output shapes: noe[n, 3], shift1[n, 2], shift2[n, 2], dist1[n, 3], dist2[n, 3], f1[n, 1], f2[n, 1], f3[n, 1]
-            delta_noe, delta_shift1, delta_shift2, delta_dist1, delta_dist2, delta_f1, delta_f2, delta_f3 = aggr_out[:, 0:3], aggr_out[:, 3:5], aggr_out[:, 5:7], aggr_out[:, 7:10], aggr_out[:, 10:13], aggr_out[:, 13:14], aggr_out[:, 14:15], aggr_out[:, 15:]
+            # output shapes: noe[n, 3], shift1[n, 2], shift2[n, 2], dist1[n, 3], dist2[n, 3], f1[n, 2], f2[n, 2], f3[n, 2]
+            delta_noe, delta_shift1, delta_shift2, delta_dist1, delta_dist2, delta_f1, delta_f2, delta_f3 = aggr_out[:, 0:3], aggr_out[:, 3:5], aggr_out[:, 5:7], aggr_out[:, 7:10], aggr_out[:, 10:13], aggr_out[:, 13:15], aggr_out[:, 15:17], aggr_out[:, 17:]
             return delta_shift1, delta_shift2, delta_noe, delta_dist1, delta_dist2, delta_f1, delta_f2, delta_f3
         else:
-            # output shapes: noe[n, 3], shift1[n, 2], shift2[n, 2], f1[n, 1], f2[n, 1], f3[n, 1]
-            delta_noe, delta_shift1, delta_shift2, delta_f1, delta_f2, delta_f3 = aggr_out[:, 0:3], aggr_out[:, 3:5], aggr_out[:, 5:7], aggr_out[:, 7:8], aggr_out[:, 8:9], aggr_out[:, 9:]
+            # output shapes: noe[n, 3], shift1[n, 2], shift2[n, 2], f1[n, 2], f2[n, 2], f3[n, 2]
+            delta_noe, delta_shift1, delta_shift2, delta_f1, delta_f2, delta_f3 = aggr_out[:, 0:3], aggr_out[:, 3:5], aggr_out[:, 5:7], aggr_out[:, 7:9], aggr_out[:, 9:11], aggr_out[:, 11:]
             return delta_shift1, delta_shift2, delta_noe, delta_f1, delta_f2, delta_f3
 
 
@@ -407,14 +419,13 @@ class TripleMessagePass(MessagePassing):
 
 
 class BatchMessagePass(MessagePassing):
-    """
-    
-    """
-    def __init__(self, aggr):
+    def __init__(self, aggr, device):
         super().__init__(aggr=aggr)
-        self.noe_reduce = (nn.Linear(3, 1))
-        self.shift_reduce = (nn.Linear(2, 1))
-        self.res_reduce = (nn.Linear(5, 1))
+        self.device = device
+
+        self.noe_reduce = (nn.Linear(3, 1, device=self.device))
+        self.shift_reduce = (nn.Linear(2, 1, device=self.device))
+        self.res_reduce = (nn.Linear(5, 1, device=self.device))
         
     def forward(self, x_source, x_target, edge_index):
         # SIZE (n, m) (source, target)
@@ -453,13 +464,13 @@ class TripleOut():
             data[target].f = self.triple_message(f_source, data[target].f, edge_index)
         return data
 
-
+    
 
 class NMRLayer(nn.Module):
-    def __init__(self):
+    def __init__(self, device):
         super(NMRLayer, self).__init__()
         self.triple_in = TripleIn()
-        self.triple_self = TripleUpdate()
+        self.triple_self = TripleUpdate(device)
         self.triple_out = TripleOut()
         self.calc_manager = CalculationManager()
 
@@ -470,7 +481,7 @@ class NMRLayer(nn.Module):
         
     def update_noes(self, data, noe_delta, feature, i):
         # 'i' is for the triple type in all of these cases (TRIPLE0 --> RES RES NOE, etc.)
-        # Should simplify this to be one or the other from the very start (string --> number identification)
+        # Should really simplify this to be one or the other from the very start (string --> number identification)
         data = self.triple_out.update_data(data, noe_delta, feature, (f'TRIPLE{i}', 'NOE_add', 'NOE'), self.NOE)
         return data
 
@@ -515,14 +526,16 @@ class NMRLayer(nn.Module):
 
 
 class ValueCalc():
-    def __init__(self):
-        self.batch_message = BatchMessagePass(aggr='mean')
+    def __init__(self, device):
+        self.device = device
+
+        self.batch_message = BatchMessagePass(aggr='mean', device=self.device)
         self.hidden = 64
 
         self.testmlp = nn.Sequential(
-            nn.Linear(3, self.hidden),
+            nn.Linear(3, self.hidden, device=self.device),
             nn.ReLU(),
-            nn.Linear(self.hidden, 1)
+            nn.Linear(self.hidden, 1, device=self.device)
         )
 
     def get_aggr(self, x_source, x_target, edge_index):
@@ -535,14 +548,15 @@ class ValueCalc():
         resid = self.get_aggr(data['RES'].x, data['VALUE_RES'].x, data['RES', 'RES_extract', 'VALUE_RES'].edge_index)
         
         concat_aggr = torch.cat((noe, shift, resid), dim=-1)
-        values = self.testmlp(concat_aggr)
-        return values
+        value = self.testmlp(concat_aggr)
+        return value
 
 
 
 class PolicyCalc():
-    def __init__(self):
+    def __init__(self, device):
         self.RES_NH = slice(3,5)
+        self.device = device
 
     def pairwise_distance(self, data, edge_type):
         node_type1, edge, node_type2 = edge_type
@@ -552,70 +566,79 @@ class PolicyCalc():
         # shift
         shift_nodes = data[node_type2].x[data[edge_type].edge_index[1]]
 
-        pair_dist = (shift_nodes - resid_nodes)
-        return -pair_dist**2
+        rel_dist = (shift_nodes - resid_nodes)
+        pair_dist2 = -(torch.norm(rel_dist, dim=-1, keepdim=True)**2)
+        return pair_dist2.squeeze() # reduce dimension [num_res, 1] --> [num_res]
     
     def calc_policy(self, data):
-        pair_dist2 = self.pairwise_distance(data, ('RES', 'pair', 'SHIFT'))
-        return pair_dist2
+        data_unbatched = data.to_data_list()
+        policy = [self.pairwise_distance(batch, ('RES', 'pair', 'SHIFT')).tolist() for batch in data_unbatched]
+        return torch.tensor(policy, dtype=torch.float32, requires_grad=True, device=self.device).unsqueeze(1) # add dimension back, now transposed [1, num_res]
 
 
 
-class TestLayer():
-    def __init__(self):
-        self.value = ValueCalc()
-        self.policy = PolicyCalc()
+class TestLayer(nn.Module):
+    def __init__(self, device):
+        super(TestLayer, self).__init__()
+        self.value = ValueCalc(device)
+        self.policy = PolicyCalc(device)
         
         self.nmr = nn.Sequential(
-                    NMRLayer(),
-                    NMRLayer(),
+                    NMRLayer(device),
                     )
 
     def forward(self, data):
-        test_data = self.nmr(data)
-        value = self.value.calc_value(test_data)
-        policy = self.policy.calc_policy(test_data)
+        out_data = self.nmr(data)
+        value = self.value.calc_value(out_data)
+        policy = self.policy.calc_policy(out_data)
         return value, policy
-
-
-
-def extract_data(pickle_file="fake_histories_r10_1.pkl"):
-    with open(pickle_file, "rb") as f:
-        histories = pickle.load(f)
-    return histories
-
-def construct_graph(history):
-    nodes = ConstructNodes()
-    data = nodes.construct_data(history)
-    edges = ConstructEdges(data)
-    data = edges.generate_edge_indices()
-    return data
-
-def preprocess_data(histories, batch_size):
-    graphs = []
-    for history in histories:
-        graphs.append(construct_graph(history))
-
-    data_loader = DataLoader(graphs, batch_size=batch_size, shuffle=False)
-    return data_loader
-
+        
 
 
 if __name__ == "__main__":
-    # nodes = ConstructNodes()
-    # data = nodes.construct_data(extract_data())
-    edges = ConstructEdges(data)
-    data = edges.generate_edge_indices()
-    # data = preprocess_data(extract_data(), batch_size=2)
 
-    value = ValueCalc()
+    def extract_data(pickle_file="fake_histories_r4_0.pkl"):
+        with open(pickle_file, "rb") as f:
+            histories = pickle.load(f)
+        return histories
 
-    # create fake graph list (not from histories) to check
-    graph_list = [data, data, data, data]
-    data_loader = DataLoader(graph_list, batch_size=2, shuffle=False)
+    def construct_graph(history, device):
+        nodes = ConstructNodes(device)
+        data = nodes.construct_data(history)
+        edges = ConstructEdges(data, device)
+        data = edges.generate_edge_indices()
+        return data
 
-    testgnn = TestLayer()
-    for batch in data_loader:
-        value, policy = testgnn.forward(batch)
-        print(value.shape) # 2 values (1 per graph in batch)
-        print(policy.shape) # 8 policies (4 per graph in batch --> 4 comparisons being made 2shift/2resid) **THESE ARE NOT SPLIT BY GRAPH**
+    def preprocess_data(histories, batch_size, device):
+        graphs = []
+        for history in histories:
+            graphs.append(construct_graph(history, device))
+
+        data_loader = DataLoader(graphs, batch_size=batch_size, shuffle=False)
+        return data_loader
+    
+    data_loader = preprocess_data(extract_data(), batch_size=1, device='cuda')
+    
+    plt.ion()
+    fig, ax = plt.subplots()
+
+    epochs = 5
+ 
+    testgnn = TestLayer(device='cuda')
+    for epoch in range(epochs):
+        batch_num = 0
+        for batch in data_loader:
+
+            batch_num += 1
+
+            value, policy = testgnn.forward(batch)
+            
+            ax.cla()
+            ax.scatter(batch['SHIFT'].x[:, 0].tolist(), batch['SHIFT'].x[:, 1].tolist(), color='red')
+            ax.scatter(batch['RES'].x[:, 3].tolist(), batch['RES'].x[:, 4].tolist(), color='blue')
+            ax.set_title(f"Epoch {epoch} Batch {batch_num}")
+
+            plt.pause(0.01)
+
+    plt.ioff()
+    plt.show()
