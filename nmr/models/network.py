@@ -5,12 +5,8 @@ Combines triple-based message passing with value and policy heads
 to create the complete neural network for NMR assignment.
 """
 
-import pickle
-
-import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-from torch_geometric.loader import DataLoader
 
 from .triple import CalculationManager, TripleIn, TripleOut, TripleUpdate
 from .heads import ValueCalc, PolicyCalc
@@ -181,6 +177,59 @@ class NMRLayer(nn.Module):
         return data
 
 
+class NormalizeShifts(nn.Module):
+    """
+    Normalize chemical shifts to have a typical range between -1 and 1
+    """
+
+    def __init__(self, H_lower=6.0, H_upper=10.0, N_lower=100.0, N_upper=135.0):
+        super().__init__()
+        self.H_lower = H_lower
+        self.H_upper = H_upper
+        self.H_delta = H_upper - H_lower
+        self.N_lower = N_lower
+        self.N_upper = N_upper
+        self.N_delta = N_upper - N_lower
+
+    def forward(self, data):
+        # split RES into coords and shifts
+        res_x = data["RES"].x
+        res_xyz = res_x[:, :3]
+        res_H = res_x[:, 3].unsqueeze(-1)
+        res_N = res_x[:, 4].unsqueeze(-1)
+        # split SHIFTS into 1H and 15N
+        shift_H = data["SHIFT"].x[:, 0].unsqueeze(-1)
+        shift_N = data["SHIFT"].x[:, 1].unsqueeze(-1)
+        # split NOEs into 1H and 15N
+        noe_H1 = data["NOE"].x[:, 0].unsqueeze(-1)
+        noe_N1 = data["NOE"].x[:, 1].unsqueeze(-1)
+        noe_H2 = data["NOE"].x[:, 2].unsqueeze(-1)
+        # transform all 1H
+        res_H = self._transform_H(res_H)
+        shift_H = self._transform_H(shift_H)
+        noe_H1 = self._transform_H(noe_H1)
+        noe_H2 = self._transform_H(noe_H2)
+        # transofrm all 15N
+        res_N = self._transform_N(res_N)
+        shift_N = self._transform_N(shift_N)
+        noe_N1 = self._transform_N(noe_N1)
+        # reassemble tensors
+        res_x = torch.cat([res_xyz, res_H, res_N], dim=-1)
+        shift_x = torch.cat([shift_H, shift_N], dim=-1)
+        noe_x = torch.cat([noe_H1, noe_N1, noe_H2], dim=-1)
+
+        data["RES"].x = res_x
+        data["SHIFT"].x = shift_x
+        data["NOE"].x = noe_x
+        return data
+
+    def _transform_H(self, value):
+        return 2 * (value - self.H_lower) / self.H_delta - 1
+
+    def _transform_N(self, value):
+        return 2 * (value - self.N_lower) / self.N_delta - 1
+
+
 class NMRNet(nn.Module):
     """
     Complete NMR GNN model combining message passing with prediction heads.
@@ -194,11 +243,13 @@ class NMRNet(nn.Module):
         self.value = ValueCalc(device)
         self.policy = PolicyCalc(device)
 
+        self.normalize = NormalizeShifts()
         self.nmr = nn.Sequential(
             NMRLayer(device),
         )
 
     def forward(self, data):
+        data = self.normalize(data)
         out_data = self.nmr(data)
         value = self.value.calc_value(out_data)
         policy = self.policy.calc_policy(out_data)
