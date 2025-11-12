@@ -1,7 +1,12 @@
 import unittest
 import numpy as np
+import sys
+from pathlib import Path
 
-from energy import Energy
+# Add parent directory to path to allow imports from nmr package
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from nmr.nmr_gym.energy import Energy
 
 
 

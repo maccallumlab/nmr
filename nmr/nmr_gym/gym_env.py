@@ -4,9 +4,9 @@ import numpy as np
 import pickle
 import math
 
-from energy import Energy
-from assignment_order import FractionalActivation
-from visualize_data import Visualization
+from .energy import Energy
+from .assignment_order import FractionalActivation
+from scripts.visualize_data import Visualization
 
 import cProfile
 import pstats
@@ -58,12 +58,9 @@ class GymEnv(gym.Env):
         # temp_intermediate_energy = 0
         ##########################################
 
-        # Calculate reward based on previous energy and temporary energy 
-        self.state['reward'] = (self.intermediate_energy - temp_intermediate_energy)
-
-        # Before correction, +ve means energy went down - we DO NOT want this, -ve means energy went up
-        assert self.state['reward'] <= 0
-        self.state['reward'] = abs(self.state['reward'])
+        # Calculate reward based on previous energy and temporary energy
+        # Positive reward when energy goes down (good), negative when energy goes up (bad)
+        self.state['reward'] = self.intermediate_energy - temp_intermediate_energy
 
         # Store energy as intermediate
         self.intermediate_energy = temp_intermediate_energy

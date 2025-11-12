@@ -1,7 +1,13 @@
-from fake_data import FakeDataGenerator
 from typing import NamedTuple
 import numpy as np
 import argparse
+import sys
+from pathlib import Path
+
+# Add parent directory to path to allow imports from nmr package
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from nmr.nmr_gym.fake_data import FakeDataGenerator
 
 
 
