@@ -1,0 +1,345 @@
+"""
+Unit tests for triple composition classes.
+
+Tests the 4 triple composition classes that wire together gather, update, and
+scatter operations:
+- ResidueResidueNoeTriple
+- ResiduePeakNoeTriple
+- PeakResidueNoeTriple
+- PeakPeakNoeTriple
+"""
+
+import sys
+import unittest
+from pathlib import Path
+
+import torch
+from torch_geometric.data import HeteroData
+
+# Add parent directory to path to allow imports from nmr package
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from nmr.models.triple import (
+    ResidueResidueNoeTriple,
+    ResiduePeakNoeTriple,
+    PeakResidueNoeTriple,
+    PeakPeakNoeTriple,
+)
+
+
+class TestResidueResidueNoeTriple(unittest.TestCase):
+    """Test ResidueResidueNoeTriple wiring and forward pass."""
+
+    def setUp(self):
+        """Set up test graph with all necessary nodes and edges."""
+        self.device = torch.device("cpu")
+        self.data = HeteroData()
+
+        # Create Residue nodes [n, 5] = [x, y, z, H, N]
+        self.data["Residue"].x = torch.tensor(
+            [
+                [1.0, 2.0, 3.0, 8.5, 120.0],
+                [4.0, 5.0, 6.0, 7.5, 115.0],
+            ],
+            dtype=torch.float32,
+            device=self.device,
+        )
+        self.data["Residue"].f = torch.tensor(
+            [[0.0, 1.0], [1.0, 0.0]], dtype=torch.float32, device=self.device
+        )
+
+        # Create Noe nodes [n, 3] = [N, H', H"]
+        self.data["Noe"].x = torch.tensor(
+            [[120.0, 8.5, 7.5]], dtype=torch.float32, device=self.device
+        )
+        self.data["Noe"].f = torch.tensor(
+            [[1.0, 0.0]], dtype=torch.float32, device=self.device
+        )
+
+        # Create triple nodes
+        self.data["ResidueResidueNoeTriple"].x = torch.zeros(
+            (1, 1), dtype=torch.float32, device=self.device
+        )
+
+        # Create gather edges
+        self.data[
+            "Residue", "gather_first", "ResidueResidueNoeTriple"
+        ].edge_index = torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+
+        self.data[
+            "Residue", "gather_second", "ResidueResidueNoeTriple"
+        ].edge_index = torch.tensor([[1], [0]], dtype=torch.long, device=self.device)
+
+        self.data["Noe", "gather_noe", "ResidueResidueNoeTriple"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+
+        # Create scatter edges (reverse direction)
+        self.data[
+            "ResidueResidueNoeTriple", "scatter_first", "Residue"
+        ].edge_index = torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+
+        self.data[
+            "ResidueResidueNoeTriple", "scatter_second", "Residue"
+        ].edge_index = torch.tensor([[0], [1]], dtype=torch.long, device=self.device)
+
+        self.data["ResidueResidueNoeTriple", "scatter_noe", "Noe"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+
+    def test_triple_instantiation(self):
+        """Test that ResidueResidueNoeTriple instantiates correctly."""
+        triple = ResidueResidueNoeTriple(self.device)
+
+        # Check that it has all the required components
+        self.assertTrue(hasattr(triple, "first_gather"))
+        self.assertTrue(hasattr(triple, "second_gather"))
+        self.assertTrue(hasattr(triple, "noe_gather"))
+        self.assertTrue(hasattr(triple, "update"))
+        self.assertTrue(hasattr(triple, "first_scatter"))
+        self.assertTrue(hasattr(triple, "second_scatter"))
+        self.assertTrue(hasattr(triple, "noe_scatter"))
+
+    def test_forward_pass_executes(self):
+        """Test that forward pass executes without error."""
+        triple = ResidueResidueNoeTriple(self.device)
+
+        # Should not raise an error
+        data = triple(self.data)
+
+        # Data should be returned
+        self.assertIsNotNone(data)
+
+    def test_forward_pass_sequence(self):
+        """Test that forward pass calls gather -> update -> scatter in sequence."""
+        triple = ResidueResidueNoeTriple(self.device)
+        data = triple(self.data)
+
+        # After forward pass, check that:
+        # 1. Gathered attributes exist on triple nodes (from gather operations)
+        self.assertIn("first_coords", data["ResidueResidueNoeTriple"])
+        self.assertIn("second_coords", data["ResidueResidueNoeTriple"])
+        self.assertIn("noe_shifts", data["ResidueResidueNoeTriple"])
+
+        # 2. Delta attributes exist on triple nodes (from update operation)
+        self.assertIn("delta_first_coords", data["ResidueResidueNoeTriple"])
+        self.assertIn("delta_second_shifts", data["ResidueResidueNoeTriple"])
+
+        # 3. Residue and Noe nodes have been updated (from scatter operations)
+        # We can't easily check the exact values, but we can verify the tensors exist
+        self.assertIsNotNone(data["Residue"].x)
+        self.assertIsNotNone(data["Noe"].x)
+
+
+class TestResiduePeakNoeTriple(unittest.TestCase):
+    """Test ResiduePeakNoeTriple wiring and forward pass."""
+
+    def setUp(self):
+        """Set up test graph with Residue, Peak, and Noe nodes."""
+        self.device = torch.device("cpu")
+        self.data = HeteroData()
+
+        # Create Residue nodes
+        self.data["Residue"].x = torch.tensor(
+            [[1.0, 2.0, 3.0, 8.5, 120.0]], dtype=torch.float32, device=self.device
+        )
+        self.data["Residue"].f = torch.tensor(
+            [[0.0, 1.0]], dtype=torch.float32, device=self.device
+        )
+
+        # Create Peak nodes
+        self.data["Peak"].x = torch.tensor(
+            [[7.5, 115.0]], dtype=torch.float32, device=self.device
+        )
+        self.data["Peak"].f = torch.tensor(
+            [[1.0, 0.0]], dtype=torch.float32, device=self.device
+        )
+
+        # Create Noe nodes
+        self.data["Noe"].x = torch.tensor(
+            [[120.0, 8.5, 7.5]], dtype=torch.float32, device=self.device
+        )
+        self.data["Noe"].f = torch.tensor(
+            [[1.0, 0.0]], dtype=torch.float32, device=self.device
+        )
+
+        # Create triple nodes
+        self.data["ResiduePeakNoeTriple"].x = torch.zeros(
+            (1, 1), dtype=torch.float32, device=self.device
+        )
+
+        # Create gather edges
+        self.data["Residue", "gather_first", "ResiduePeakNoeTriple"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+        self.data["Peak", "gather_second", "ResiduePeakNoeTriple"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+        self.data["Noe", "gather_noe", "ResiduePeakNoeTriple"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+
+        # Create scatter edges
+        self.data["ResiduePeakNoeTriple", "scatter_first", "Residue"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+        self.data["ResiduePeakNoeTriple", "scatter_second", "Peak"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+        self.data["ResiduePeakNoeTriple", "scatter_noe", "Noe"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+
+    def test_triple_uses_correct_components(self):
+        """Test that ResiduePeakNoeTriple uses correct gather/scatter types."""
+        triple = ResiduePeakNoeTriple(self.device)
+
+        # Check component types by examining their triple_type attribute
+        self.assertEqual(triple.first_gather.triple_type, "ResiduePeakNoeTriple")
+        self.assertEqual(triple.second_gather.triple_type, "ResiduePeakNoeTriple")
+        self.assertEqual(triple.noe_gather.triple_type, "ResiduePeakNoeTriple")
+        self.assertEqual(triple.update.triple_type, "ResiduePeakNoeTriple")
+
+        # Check edge types to ensure correct gather/scatter classes
+        self.assertEqual(
+            triple.first_gather.edge_type,
+            ("Residue", "gather_first", "ResiduePeakNoeTriple"),
+        )
+        self.assertEqual(
+            triple.second_gather.edge_type,
+            ("Peak", "gather_second", "ResiduePeakNoeTriple"),
+        )
+
+    def test_forward_pass_executes(self):
+        """Test that forward pass executes without error."""
+        triple = ResiduePeakNoeTriple(self.device)
+        data = triple(self.data)
+        self.assertIsNotNone(data)
+
+
+class TestPeakResidueNoeTriple(unittest.TestCase):
+    """Test PeakResidueNoeTriple wiring and forward pass."""
+
+    def setUp(self):
+        """Set up test graph with Peak, Residue, and Noe nodes."""
+        self.device = torch.device("cpu")
+        self.data = HeteroData()
+
+        # Create Peak nodes
+        self.data["Peak"].x = torch.tensor(
+            [[8.5, 120.0]], dtype=torch.float32, device=self.device
+        )
+        self.data["Peak"].f = torch.tensor(
+            [[0.0, 1.0]], dtype=torch.float32, device=self.device
+        )
+
+        # Create Residue nodes
+        self.data["Residue"].x = torch.tensor(
+            [[1.0, 2.0, 3.0, 7.5, 115.0]], dtype=torch.float32, device=self.device
+        )
+        self.data["Residue"].f = torch.tensor(
+            [[1.0, 0.0]], dtype=torch.float32, device=self.device
+        )
+
+        # Create Noe nodes
+        self.data["Noe"].x = torch.tensor(
+            [[120.0, 8.5, 7.5]], dtype=torch.float32, device=self.device
+        )
+        self.data["Noe"].f = torch.tensor(
+            [[1.0, 0.0]], dtype=torch.float32, device=self.device
+        )
+
+        # Create triple nodes
+        self.data["PeakResidueNoeTriple"].x = torch.zeros(
+            (1, 1), dtype=torch.float32, device=self.device
+        )
+
+        # Create gather edges
+        self.data["Peak", "gather_first", "PeakResidueNoeTriple"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+        self.data["Residue", "gather_second", "PeakResidueNoeTriple"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+        self.data["Noe", "gather_noe", "PeakResidueNoeTriple"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+
+        # Create scatter edges
+        self.data["PeakResidueNoeTriple", "scatter_first", "Peak"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+        self.data["PeakResidueNoeTriple", "scatter_second", "Residue"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+        self.data["PeakResidueNoeTriple", "scatter_noe", "Noe"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+
+    def test_forward_pass_executes(self):
+        """Test that forward pass executes without error."""
+        triple = PeakResidueNoeTriple(self.device)
+        data = triple(self.data)
+        self.assertIsNotNone(data)
+
+
+class TestPeakPeakNoeTriple(unittest.TestCase):
+    """Test PeakPeakNoeTriple wiring and forward pass."""
+
+    def setUp(self):
+        """Set up test graph with Peak and Noe nodes."""
+        self.device = torch.device("cpu")
+        self.data = HeteroData()
+
+        # Create Peak nodes
+        self.data["Peak"].x = torch.tensor(
+            [[8.5, 120.0], [7.5, 115.0]], dtype=torch.float32, device=self.device
+        )
+        self.data["Peak"].f = torch.tensor(
+            [[0.0, 1.0], [1.0, 0.0]], dtype=torch.float32, device=self.device
+        )
+
+        # Create Noe nodes
+        self.data["Noe"].x = torch.tensor(
+            [[120.0, 8.5, 7.5]], dtype=torch.float32, device=self.device
+        )
+        self.data["Noe"].f = torch.tensor(
+            [[1.0, 0.0]], dtype=torch.float32, device=self.device
+        )
+
+        # Create triple nodes
+        self.data["PeakPeakNoeTriple"].x = torch.zeros(
+            (1, 1), dtype=torch.float32, device=self.device
+        )
+
+        # Create gather edges
+        self.data["Peak", "gather_first", "PeakPeakNoeTriple"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+        self.data["Peak", "gather_second", "PeakPeakNoeTriple"].edge_index = (
+            torch.tensor([[1], [0]], dtype=torch.long, device=self.device)
+        )
+        self.data["Noe", "gather_noe", "PeakPeakNoeTriple"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+
+        # Create scatter edges
+        self.data["PeakPeakNoeTriple", "scatter_first", "Peak"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+        self.data["PeakPeakNoeTriple", "scatter_second", "Peak"].edge_index = (
+            torch.tensor([[0], [1]], dtype=torch.long, device=self.device)
+        )
+        self.data["PeakPeakNoeTriple", "scatter_noe", "Noe"].edge_index = (
+            torch.tensor([[0], [0]], dtype=torch.long, device=self.device)
+        )
+
+    def test_forward_pass_executes(self):
+        """Test that forward pass executes without error."""
+        triple = PeakPeakNoeTriple(self.device)
+        data = triple(self.data)
+        self.assertIsNotNone(data)
+
+
+if __name__ == "__main__":
+    unittest.main()

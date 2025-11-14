@@ -8,10 +8,9 @@ import argparse
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from nmr.construct import construct_graph
-from nmr.models import NMRNet
+from nmr.models import NMRNet, ModelConfig
 from nmr.nmr_gym.io import load_histories
 from torch_geometric.loader import DataLoader
-from matplotlib import pyplot as plt
 
 
 def extract_data(pickle_file):
@@ -29,58 +28,77 @@ def extract_data(pickle_file):
 
 
 def preprocess_data(examples, device):
-    """Convert state dictionaries to graphs and return actions and values separately."""
+    """
+    Convert state dictionaries to graphs with targets attached.
+
+    Attaches action and value targets as graph-level attributes following
+    the same pattern as shift_to_assign in construct_graph().
+    This allows the DataLoader to handle graphs and targets together.
+
+    Args:
+        examples: List of (state_dict, action, value) tuples
+        device: Device to place tensors on
+
+    Returns:
+        List of HeteroData graphs with .action and .value attributes
+    """
     graphs = []
-    actions = []
-    values = []
 
     for state_dict, action, value in examples:
         graph = construct_graph(state_dict, device)
-        graphs.append(graph)
-        actions.append(action)
-        values.append(value)
 
-    return graphs, actions, values
+        # Attach targets as graph-level attributes (similar to shift_to_assign)
+        graph.action = torch.tensor([action], dtype=torch.long, device=device)
+        graph.value = torch.tensor([value], dtype=torch.float32, device=device)
+
+        graphs.append(graph)
+
+    return graphs
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train GNN model on NMR assignment histories")
+    parser = argparse.ArgumentParser(
+        description="Train GNN model on NMR assignment histories"
+    )
     parser.add_argument(
         "--histories",
         type=str,
         required=True,
-        help="Path to the pickle file containing training histories"
+        help="Path to the pickle file containing training histories",
     )
     parser.add_argument(
         "--device",
         type=str,
         default="cpu",
         choices=["cpu", "cuda"],
-        help="Device to use for training (default: cpu)"
+        help="Device to use for training (default: cpu)",
     )
     parser.add_argument(
         "--epochs",
         type=int,
         default=50000,
-        help="Number of training epochs (default: 50000)"
+        help="Number of training epochs (default: 50000)",
     )
     parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=1,
-        help="Batch size for training (default: 1)"
+        "--batch-size", type=int, default=1, help="Batch size for training (default: 1)"
     )
     parser.add_argument(
         "--learning-rate",
         type=float,
         default=1e-4,
-        help="Learning rate for optimizer (default: 1e-4)"
+        help="Learning rate for optimizer (default: 1e-4)",
     )
     parser.add_argument(
         "--eval-interval",
         type=int,
         default=100,
-        help="Evaluate model every N iterations (default: 100)"
+        help="Evaluate model every N iterations (default: 100)",
+    )
+    parser.add_argument(
+        "--num-nmr-layers",
+        type=int,
+        default=1,
+        help="Number of NMR layers in the model (default: 1)",
     )
 
     args = parser.parse_args()
@@ -90,75 +108,87 @@ if __name__ == "__main__":
 
     # Load data
     examples = extract_data(args.histories)
-    nmr_graphs, actions, rewards = preprocess_data(examples, device)
+    nmr_graphs = preprocess_data(examples, device)
 
     batch_size = args.batch_size
     epochs = args.epochs
     eval_interval = args.eval_interval
 
+    # Targets are now attached to graphs, so shuffling is safe
     data_loader = DataLoader(nmr_graphs, batch_size=batch_size, shuffle=False)
 
+    config = ModelConfig(num_nmr_layers=args.num_nmr_layers)
     # Create our network and optimizer
-    net = NMRNet(device)
+    net = NMRNet(device, config)
     opt = torch.optim.AdamW(net.parameters(), lr=args.learning_rate, weight_decay=0.01)
-
-    # Interactive plotting
-    plt.ion()
-    fig, ax = plt.subplots()
 
     iteration = 0
     for epoch in range(epochs):
 
-        for i, xs in enumerate(data_loader):
+        for xs in data_loader:
             net.train()
             iteration += 1
 
-            # Break targets into batches manually (if in same order - no shuffling)
-            ys = actions[i * batch_size : (i + 1) * batch_size]
+            _, policies = net(xs)
 
-            _, _, policies = net(xs)
-
-            # Plots current iteration in batch ##########################################
-            ax.cla()
-            x_val1, y_val1 = xs["SHIFT"].x[:, 0].tolist(), xs["SHIFT"].x[:, 1].tolist()
-            x_val2, y_val2 = xs["RES"].x[:, 3].tolist(), xs["RES"].x[:, 4].tolist()
-
-            ax.scatter(x_val1, y_val1, color="red", label="shift")
-            ax.scatter(x_val2, y_val2, color="blue", label="resid")
-
-            for j in range(len(x_val1)):
-                ax.annotate(j, (x_val1[j], y_val1[j] + 0.5), color="red")
-                ax.annotate(j, (x_val2[j], y_val2[j] + 0.5), color="blue")
-
-            ax.legend()
-            ax.set_title(f"Iteration {iteration} - Batch {i}")
-            plt.pause(0.01)
-            #############################################################################
+            # Unbatch graphs to access per-graph attributes
+            # Targets (action, value) are attached to each graph
+            graphs_list = xs.to_data_list()
 
             loss = 0
             correct = 0
             count = 0
+            policy_ce_losses = []
 
-            for policy, y in zip(policies, ys):
-                y = torch.tensor([y], dtype=torch.long, device=device)
-                loss += torch.nn.functional.cross_entropy(policy, y)
-                y_pred = torch.argmax(policy)
+            # Policy training: Supervise the network to predict the correct residue assignment
+            # - policy: shape [num_peaks, num_residues], where policy[peak_i, res_j] = logit for peak i -> residue j
+            # - We compute cross-entropy loss for:
+            #   1. The peak being assigned (shift_to_assign) with action as target
+            #   2. All previously assigned peaks with their assigned residues as targets
+            for graph, policy in zip(graphs_list, policies):
+                action = graph.action  # Target residue for current assignment
+                shift_to_assign = graph.shift_to_assign.item()
 
-                if y_pred == y:
+                # Cross-entropy loss for current assignment
+                # Extract row for the peak being assigned: policy[shift_to_assign, :]
+                current_logits = policy[shift_to_assign].unsqueeze(0)  # [1, num_residues]
+                ce_loss = torch.nn.functional.cross_entropy(current_logits, action)
+
+                # Cross-entropy loss for all previous assignments
+                edge_index = graph["Peak", "assigned_to", "Residue"].edge_index
+                if edge_index.shape[1] > 0:  # Check if there are any assigned peaks
+                    assigned_peak_ids = edge_index[0]  # Indices of assigned peaks
+                    assigned_residue_ids = edge_index[1]  # Indices of assigned residues
+
+                    # Extract rows for all assigned peaks: policy[assigned_peak_ids, :]
+                    # Shape: [num_assigned, num_residues]
+                    assigned_logits = policy[assigned_peak_ids]
+
+                    # Compute cross-entropy for each previous assignment and sum
+                    # Target for each row is the corresponding assigned residue
+                    prev_ce_loss = torch.nn.functional.cross_entropy(
+                        assigned_logits, assigned_residue_ids, reduction='sum'
+                    )
+                    ce_loss = ce_loss + prev_ce_loss
+
+                # Track components for logging
+                policy_ce_losses.append(ce_loss.item())
+
+                loss += ce_loss
+
+                y_pred = torch.argmax(current_logits)
+                if y_pred == action:
                     correct += 1
                 count += 1
 
-            loss = loss / count
-            accuracy = correct / count
-
-            print(f"Iteration {iteration} - Loss: {loss.item()} - Accuracy: {accuracy}")
-
-            # writer.add_scalar("Loss/train", loss.item(), iteration)
-            # writer.add_scalar("Accuracy/train", accuracy, iteration)
+            if iteration % eval_interval == 0:
+                mean_ce = sum(policy_ce_losses) / len(policy_ce_losses)
+                print(
+                    f"{iteration}, "
+                    f"Policy Loss: {mean_ce:.4f}, "
+                    f"Accuracy: {correct / count:.4f}"
+                )
 
             opt.zero_grad()
             loss.backward()
             opt.step()
-
-    plt.ioff()
-    plt.show()

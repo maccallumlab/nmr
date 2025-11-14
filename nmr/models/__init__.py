@@ -6,15 +6,41 @@ using heterogeneous graph neural networks with triple-based message passing.
 """
 
 # Core network components
-from .network import NMRLayer, NMRNet
+from .network import (
+    NMRLayer,
+    NMRNet,
+    ModelConfig,
+    FeatureEmbedConfig,
+    ShiftEmbedConfig,
+    MLPConfig,
+)
 
-# Triple message passing
+# Triple message passing - new modular architecture
 from .triple import (
-    CalculationManager,
-    TripleIn,
-    TripleMessagePass,
-    TripleOut,
-    TripleUpdate,
+    # Gather components
+    FirstResidueGather,
+    FirstPeakGather,
+    SecondResidueGather,
+    SecondPeakGather,
+    NoeGather,
+    # Update components
+    ResidueUpdate,
+    PeakUpdate,
+    # Scatter components
+    FirstResidueScatter,
+    FirstPeakScatter,
+    SecondResidueScatter,
+    SecondPeakScatter,
+    NoeScatter,
+    # Triple composition
+    ResidueResidueNoeTriple,
+    ResiduePeakNoeTriple,
+    PeakResidueNoeTriple,
+    PeakPeakNoeTriple,
+    # Helper functions
+    calc_noe_difference,
+    calc_shift_difference,
+    calc_res_distance,
 )
 
 # Prediction heads
@@ -24,12 +50,35 @@ __all__ = [
     # Network
     "NMRLayer",
     "NMRNet",
-    # Triple components
-    "CalculationManager",
-    "TripleIn",
-    "TripleUpdate",
-    "TripleMessagePass",
-    "TripleOut",
+    # Configuration
+    "ModelConfig",
+    "FeatureEmbedConfig",
+    "ShiftEmbedConfig",
+    "MLPConfig",
+    # Gather components
+    "FirstResidueGather",
+    "FirstPeakGather",
+    "SecondResidueGather",
+    "SecondPeakGather",
+    "NoeGather",
+    # Update components
+    "ResidueUpdate",
+    "PeakUpdate",
+    # Scatter components
+    "FirstResidueScatter",
+    "FirstPeakScatter",
+    "SecondResidueScatter",
+    "SecondPeakScatter",
+    "NoeScatter",
+    # Triple composition
+    "ResidueResidueNoeTriple",
+    "ResiduePeakNoeTriple",
+    "PeakResidueNoeTriple",
+    "PeakPeakNoeTriple",
+    # Helper functions
+    "calc_noe_difference",
+    "calc_shift_difference",
+    "calc_res_distance",
     # Heads
     "BatchMessagePass",
     "ValueCalc",
