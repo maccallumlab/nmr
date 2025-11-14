@@ -3,6 +3,13 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Pickled data and visualization
+*.pkl
+!fake_histories_r4_0.pkl
+*.png
+runs/
+*.pdb
+
 # C extensions
 *.so
 

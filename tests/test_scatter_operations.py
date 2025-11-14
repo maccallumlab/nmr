@@ -1,0 +1,218 @@
+"""
+Tests for scatter operations in triple system.
+
+Tests verify that scatter classes correctly propagate deltas from triple nodes
+back to source nodes using mean aggregation.
+"""
+
+import sys
+import unittest
+from pathlib import Path
+
+import torch
+from torch_geometric.data import HeteroData
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from nmr.models.triple import (
+    FirstResidueScatter,
+    FirstPeakScatter,
+    SecondResidueScatter,
+    SecondPeakScatter,
+    NoeScatter,
+)
+
+
+class TestScatterOperations(unittest.TestCase):
+    """Test scatter operations that propagate deltas to source nodes."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.device = torch.device("cpu")
+
+    def test_first_residue_scatter_updates_coordinates_and_shifts(self):
+        """Test FirstResidueScatter updates Residue.x[:, 0:3], Residue.x[:, 3:5], and Residue.f."""
+        # Create minimal HeteroData with Residue nodes and ResidueResidueNoeTriple
+        data = HeteroData()
+
+        # Create 3 Residue nodes with coords [0:3] and shifts [3:5]
+        data["Residue"].x = torch.zeros(3, 5)  # [n, 5] = [coords(3) + shifts(2)]
+        data["Residue"].f = torch.zeros(3, 2)  # [n, 2] features
+
+        # Create 2 triple nodes with deltas
+        triple_type = "ResidueResidueNoeTriple"
+        data[triple_type].x = torch.zeros(2, 1)  # Dummy attribute
+        data[triple_type].delta_first_coords = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        data[triple_type].delta_first_shifts = torch.tensor([[0.1, 0.2], [0.3, 0.4]])
+        data[triple_type].delta_first_features = torch.tensor([[0.5, 0.6], [0.7, 0.8]])
+
+        # Create prop edges: Residue <-> Triple (used with reversed flow for scatter)
+        # Edge format: [source_indices, triple_indices] = [Residue IDs, Triple IDs]
+        # Triple 0 connects to Residue 0, Triple 1 connects to Residue 1
+        data["Residue", "prop_first", triple_type].edge_index = torch.tensor(
+            [[0, 1], [0, 1]]
+        )
+
+        # Apply scatter operation
+        scatter = FirstResidueScatter(triple_type)
+        data = scatter(data)
+
+        # Verify coordinates were updated
+        self.assertTrue(torch.allclose(data["Residue"].x[0, 0:3], torch.tensor([1.0, 2.0, 3.0])))
+        self.assertTrue(torch.allclose(data["Residue"].x[1, 0:3], torch.tensor([4.0, 5.0, 6.0])))
+        self.assertTrue(torch.allclose(data["Residue"].x[2, 0:3], torch.tensor([0.0, 0.0, 0.0])))
+
+        # Verify shifts were updated
+        self.assertTrue(torch.allclose(data["Residue"].x[0, 3:5], torch.tensor([0.1, 0.2])))
+        self.assertTrue(torch.allclose(data["Residue"].x[1, 3:5], torch.tensor([0.3, 0.4])))
+
+        # Verify features were updated
+        self.assertTrue(torch.allclose(data["Residue"].f[0], torch.tensor([0.5, 0.6])))
+        self.assertTrue(torch.allclose(data["Residue"].f[1], torch.tensor([0.7, 0.8])))
+
+    def test_first_peak_scatter_updates_shifts_and_features(self):
+        """Test FirstPeakScatter updates Peak.x and Peak.f (no coordinates)."""
+        # Create minimal HeteroData with Peak nodes and ResiduePeakNoeTriple
+        data = HeteroData()
+
+        # Create 3 Peak nodes with shifts only
+        data["Peak"].x = torch.zeros(3, 2)  # [n, 2] shifts (H, N)
+        data["Peak"].f = torch.zeros(3, 2)  # [n, 2] features
+
+        # Create 2 triple nodes with deltas
+        triple_type = "ResiduePeakNoeTriple"
+        data[triple_type].x = torch.zeros(2, 1)
+        data[triple_type].delta_first_shifts = torch.tensor([[0.1, 0.2], [0.3, 0.4]])
+        data[triple_type].delta_first_features = torch.tensor([[0.5, 0.6], [0.7, 0.8]])
+
+        # Create prop edges: Peak <-> Triple (used with reversed flow for scatter)
+        # Edge format: [source_indices, triple_indices] = [Peak IDs, Triple IDs]
+        data["Peak", "prop_first", triple_type].edge_index = torch.tensor([[0, 1], [0, 1]])
+
+        # Apply scatter operation
+        scatter = FirstPeakScatter(triple_type)
+        data = scatter(data)
+
+        # Verify shifts were updated
+        self.assertTrue(torch.allclose(data["Peak"].x[0], torch.tensor([0.1, 0.2])))
+        self.assertTrue(torch.allclose(data["Peak"].x[1], torch.tensor([0.3, 0.4])))
+        self.assertTrue(torch.allclose(data["Peak"].x[2], torch.tensor([0.0, 0.0])))
+
+        # Verify features were updated
+        self.assertTrue(torch.allclose(data["Peak"].f[0], torch.tensor([0.5, 0.6])))
+        self.assertTrue(torch.allclose(data["Peak"].f[1], torch.tensor([0.7, 0.8])))
+
+    def test_noe_scatter_updates_shifts_and_features(self):
+        """Test NoeScatter updates Noe.x and Noe.f."""
+        # Create minimal HeteroData with Noe nodes and ResidueResidueNoeTriple
+        data = HeteroData()
+
+        # Create 3 Noe nodes with shifts [N, H', H"]
+        data["Noe"].x = torch.zeros(3, 3)  # [n, 3] NOE shifts
+        data["Noe"].f = torch.zeros(3, 2)  # [n, 2] features
+
+        # Create 2 triple nodes with deltas
+        triple_type = "ResidueResidueNoeTriple"
+        data[triple_type].x = torch.zeros(2, 1)
+        data[triple_type].delta_noe_shifts = torch.tensor([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
+        data[triple_type].delta_noe_features = torch.tensor([[0.7, 0.8], [0.9, 1.0]])
+
+        # Create prop edges: Noe <-> Triple (used with reversed flow for scatter)
+        # Edge format: [source_indices, triple_indices] = [Noe IDs, Triple IDs]
+        data["Noe", "prop_noe", triple_type].edge_index = torch.tensor([[0, 1], [0, 1]])
+
+        # Apply scatter operation
+        scatter = NoeScatter(triple_type)
+        data = scatter(data)
+
+        # Verify NOE shifts were updated
+        self.assertTrue(torch.allclose(data["Noe"].x[0], torch.tensor([0.1, 0.2, 0.3])))
+        self.assertTrue(torch.allclose(data["Noe"].x[1], torch.tensor([0.4, 0.5, 0.6])))
+        self.assertTrue(torch.allclose(data["Noe"].x[2], torch.tensor([0.0, 0.0, 0.0])))
+
+        # Verify features were updated
+        self.assertTrue(torch.allclose(data["Noe"].f[0], torch.tensor([0.7, 0.8])))
+        self.assertTrue(torch.allclose(data["Noe"].f[1], torch.tensor([0.9, 1.0])))
+
+    def test_scatter_aggregates_multiple_updates_with_mean(self):
+        """Test scatter operations aggregate multiple updates using mean."""
+        # Create HeteroData where multiple triples scatter to same Residue node
+        data = HeteroData()
+
+        # Create 2 Residue nodes
+        data["Residue"].x = torch.zeros(2, 5)
+        data["Residue"].f = torch.zeros(2, 2)
+
+        # Create 3 triple nodes with deltas
+        triple_type = "ResidueResidueNoeTriple"
+        data[triple_type].x = torch.zeros(3, 1)
+        data[triple_type].delta_first_coords = torch.tensor(
+            [[1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [3.0, 6.0, 9.0]]
+        )
+        data[triple_type].delta_first_shifts = torch.tensor(
+            [[0.1, 0.2], [0.2, 0.4], [0.3, 0.6]]
+        )
+        data[triple_type].delta_first_features = torch.tensor(
+            [[0.5, 0.6], [1.0, 1.2], [1.5, 1.8]]
+        )
+
+        # Create prop edges: Residue <-> Triple (used with reversed flow for scatter)
+        # Edge format: [source_indices, triple_indices] = [Residue IDs, Triple IDs]
+        # Triples 0,1,2 all connect to Residue 0
+        data["Residue", "prop_first", triple_type].edge_index = torch.tensor(
+            [[0, 0, 0], [0, 1, 2]]
+        )
+
+        # Apply scatter operation
+        scatter = FirstResidueScatter(triple_type)
+        data = scatter(data)
+
+        # Verify mean aggregation
+        # Expected coords mean: (1+2+3)/3 = 2, (2+4+6)/3 = 4, (3+6+9)/3 = 6
+        expected_coords = torch.tensor([2.0, 4.0, 6.0])
+        self.assertTrue(torch.allclose(data["Residue"].x[0, 0:3], expected_coords))
+
+        # Expected shifts mean: (0.1+0.2+0.3)/3 = 0.2, (0.2+0.4+0.6)/3 = 0.4
+        expected_shifts = torch.tensor([0.2, 0.4])
+        self.assertTrue(torch.allclose(data["Residue"].x[0, 3:5], expected_shifts))
+
+        # Expected features mean: (0.5+1.0+1.5)/3 = 1.0, (0.6+1.2+1.8)/3 = 1.2
+        expected_features = torch.tensor([1.0, 1.2])
+        self.assertTrue(torch.allclose(data["Residue"].f[0], expected_features))
+
+        # Residue 1 should remain unchanged (no edges to it)
+        self.assertTrue(torch.allclose(data["Residue"].x[1], torch.zeros(5)))
+        self.assertTrue(torch.allclose(data["Residue"].f[1], torch.zeros(2)))
+
+    def test_scatter_edge_directions_correct(self):
+        """Test scatter operations use bidirectional edges with reversed flow."""
+        # This test verifies the edge type is configured correctly
+        # Edge types are now bidirectional (source, "prop_*", triple)
+        # Scatter uses the same edges as gather but with flow='target_to_source'
+
+        triple_type = "ResidueResidueNoeTriple"
+
+        # Test FirstResidueScatter - uses ("Residue", "prop_first", triple) edges
+        scatter = FirstResidueScatter(triple_type)
+        self.assertEqual(scatter.edge_type, ("Residue", "prop_first", triple_type))
+
+        # Test FirstPeakScatter - uses ("Peak", "prop_first", triple) edges
+        scatter = FirstPeakScatter("ResiduePeakNoeTriple")
+        self.assertEqual(scatter.edge_type, ("Peak", "prop_first", "ResiduePeakNoeTriple"))
+
+        # Test SecondResidueScatter - uses ("Residue", "prop_second", triple) edges
+        scatter = SecondResidueScatter(triple_type)
+        self.assertEqual(scatter.edge_type, ("Residue", "prop_second", triple_type))
+
+        # Test SecondPeakScatter - uses ("Peak", "prop_second", triple) edges
+        scatter = SecondPeakScatter("PeakPeakNoeTriple")
+        self.assertEqual(scatter.edge_type, ("Peak", "prop_second", "PeakPeakNoeTriple"))
+
+        # Test NoeScatter - uses ("Noe", "prop_noe", triple) edges
+        scatter = NoeScatter(triple_type)
+        self.assertEqual(scatter.edge_type, ("Noe", "prop_noe", triple_type))
+
+
+if __name__ == "__main__":
+    unittest.main()
