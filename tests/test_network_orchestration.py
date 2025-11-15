@@ -16,7 +16,7 @@ import numpy as np
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from nmr.models.network import NMRLayer, ModelConfig, StandardizeShifts, EmbedFeatures
+from nmr.models.network import NMRLayer, ModelConfig, EmbedFeatures
 from nmr.models.triple import (
     ResidueResidueNoeTriple,
     ResiduePeakNoeTriple,
@@ -73,12 +73,11 @@ class TestNMRLayerOrchestration(unittest.TestCase):
             "shift_to_assign": 0,
         }
 
-        data = construct_graph(history=history, device=self.device)
+        data = construct_graph(history=history, device=self.device, config=self.config)
 
         # Embed the data (NMRLayer expects embedded features)
-        normalize = StandardizeShifts()
+        # Coordinates are already normalized during graph construction
         embed = EmbedFeatures(self.device, self.config)
-        data = normalize(data)
         data = embed(data)
 
         # Store original node features to verify they change
@@ -118,12 +117,11 @@ class TestNMRLayerOrchestration(unittest.TestCase):
             "shift_to_assign": 0,
         }
 
-        data = construct_graph(history=history, device=self.device)
+        data = construct_graph(history=history, device=self.device, config=self.config)
 
         # Embed the data (NMRLayer expects embedded features)
-        normalize = StandardizeShifts()
+        # Coordinates are already normalized during graph construction
         embed = EmbedFeatures(self.device, self.config)
-        data = normalize(data)
         data = embed(data)
 
         # The forward method should have a straightforward sequence of calls

@@ -27,17 +27,17 @@ def extract_data(pickle_file):
     return examples
 
 
-def preprocess_data(examples, device):
+def preprocess_data(examples, device, config):
     """
     Convert state dictionaries to graphs with targets attached.
 
-    Attaches action and value targets as graph-level attributes following
-    the same pattern as shift_to_assign in construct_graph().
+    Attaches action and value targets as graph-level attributes.
     This allows the DataLoader to handle graphs and targets together.
 
     Args:
         examples: List of (state_dict, action, value) tuples
         device: Device to place tensors on
+        config: ModelConfig for graph construction
 
     Returns:
         List of HeteroData graphs with .action and .value attributes
@@ -45,7 +45,7 @@ def preprocess_data(examples, device):
     graphs = []
 
     for state_dict, action, value in examples:
-        graph = construct_graph(state_dict, device)
+        graph = construct_graph(state_dict, device, config)
 
         # Attach targets as graph-level attributes (similar to shift_to_assign)
         graph.action = torch.tensor([action], dtype=torch.long, device=device)
@@ -56,7 +56,7 @@ def preprocess_data(examples, device):
     return graphs
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(
         description="Train GNN model on NMR assignment histories"
     )
@@ -106,9 +106,12 @@ if __name__ == "__main__":
     # Set device
     device = args.device
 
+    # Create config (needed for both graph construction and network)
+    config = ModelConfig(num_nmr_layers=args.num_nmr_layers)
+
     # Load data
     examples = extract_data(args.histories)
-    nmr_graphs = preprocess_data(examples, device)
+    nmr_graphs = preprocess_data(examples, device, config)
 
     batch_size = args.batch_size
     epochs = args.epochs
@@ -117,7 +120,6 @@ if __name__ == "__main__":
     # Targets are now attached to graphs, so shuffling is safe
     data_loader = DataLoader(nmr_graphs, batch_size=batch_size, shuffle=False)
 
-    config = ModelConfig(num_nmr_layers=args.num_nmr_layers)
     # Create our network and optimizer
     net = NMRNet(device, config)
     opt = torch.optim.AdamW(net.parameters(), lr=args.learning_rate, weight_decay=0.01)
@@ -192,3 +194,6 @@ if __name__ == "__main__":
             opt.zero_grad()
             loss.backward()
             opt.step()
+
+if __name__ == "__main__":
+    main()

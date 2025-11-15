@@ -13,11 +13,16 @@ via edges, while triples simulate hypergraphs with 3 nodes.
 
 Pair Type:
 - AssignedPair: (Peak, Residue) pairs connected by "assigned_to" edges
-  Updates shifts and features in both directions
+  Updates features in both directions
+
+NEW ATTRIBUTE STRUCTURE (after refactoring):
+- Uses .x for all feature operations (embedded shifts + flags)
+- NO shift difference calculations (removed translation invariance)
+- Network learns from absolute shift embeddings directly
 
 Node Type Naming:
-- Residue: Protein residues with coordinates [x,y,z] and shifts [H,N]
-- Peak: Observed chemical shifts [H,N]
+- Residue: Protein residues with coordinates .xyz and shifts .shifts [H,N]
+- Peak: Observed chemical shifts .shifts [H,N]
 
 Edge Naming:
 - Bidirectional edges: ("Peak", "assigned_to", "Residue")
@@ -28,19 +33,6 @@ Edge Naming:
 import torch
 import torch.nn as nn
 from torch_geometric.nn import MessagePassing
-
-
-# ============================================================================
-# MLP Architecture Constants
-# ============================================================================
-
-# AssignedPeakToResidueMessage MLP
-PEAK_TO_RESIDUE_INPUT_SIZE = 6  # shift_diffs(2) + peak_features(2) + residue_features(2)
-PEAK_TO_RESIDUE_OUTPUT_SIZE = 3  # shift_weight(1) + feature_deltas(2) for residue
-
-# AssignedResidueToPeakMessage MLP
-RESIDUE_TO_PEAK_INPUT_SIZE = 6  # shift_diffs(2) + residue_features(2) + peak_features(2)
-RESIDUE_TO_PEAK_OUTPUT_SIZE = 3  # shift_weight(1) + feature_deltas(2) for peak
 
 
 # ============================================================================
@@ -55,14 +47,15 @@ class AssignedPeakToResidueMessage(MessagePassing):
     Uses edge type: ("Peak", "assigned_to", "Residue") with flow='source_to_target'
 
     Message computation:
-        1. Extract peak shifts, residue shifts, and features
-        2. Compute shift differences (peak - residue)
-        3. Concatenate shift diffs and features
-        4. Pass through MLP to get residue deltas
-        5. Apply deltas to residue shifts and features (aggregated)
+        1. Extract peak and residue embedded features from .x
+        2. Concatenate absolute features (NO shift differences)
+        3. Pass through MLP to get residue feature deltas
+        4. Apply deltas to residue features (aggregated)
 
-    Equivariance:
-        All calculations use shift differences (never absolute shifts)
+    IMPORTANT CHANGES (Task 1.7 - Remove Translation Invariance):
+    - Uses ABSOLUTE embedded shift features (not shift differences)
+    - Network can learn any necessary invariances from raw feature embeddings
+    - Only updates .x features (feature portion only)
     """
 
     def __init__(self, device, config, hidden_size: int = None, num_layers: int = None):
@@ -87,16 +80,19 @@ class AssignedPeakToResidueMessage(MessagePassing):
             num_layers = config.mlp.num_layers
 
         # Calculate input/output sizes from config
-        shift_dim = config.shift_embed.output_dim
-        feature_dim = config.feature_embed.output_dim
-        # Input: shift_diffs (shift_dim) + peak_features (feature_dim) + residue_features (feature_dim)
-        input_size = shift_dim + 2 * feature_dim
-        # Output: shift_weight (shift_dim) + feature_deltas (feature_dim) for residue
-        output_size = shift_dim + feature_dim
+        # NOTE: With unified architecture, .x is [embed_dim], not split into shift+feature
+        embed_dim = config.embed.embed_dim
 
-        # Store dimensions
-        self.shift_dim = shift_dim
-        self.feature_dim = feature_dim
+        # Input: peak features (embed_dim) + residue features (embed_dim)
+        # NO SHIFT DIFFERENCES - using absolute embedded features
+        input_size = 2 * embed_dim
+
+        # Output: updates to unified embedding (embed_dim) for residue
+        output_size = embed_dim
+
+        # Store dimensions (for backward compatibility)
+        self.shift_dim = embed_dim
+        self.feature_dim = embed_dim
 
         # Build MLP
         layers = []
@@ -125,94 +121,71 @@ class AssignedPeakToResidueMessage(MessagePassing):
             data: HeteroData graph with Peak and Residue nodes
 
         Returns:
-            Updated HeteroData with Residue.x and Residue.f modified
+            Updated HeteroData with Residue.x modified (feature portion only)
         """
         # Get edge indices
         edge_index = data[self.edge_type].edge_index
 
-        # Extract peak shifts [n_peaks, shift_dim] and features [n_peaks, feature_dim]
-        peak_shifts = data["Peak"].x
-        peak_features = data["Peak"].f
-
-        # Extract residue shifts [n_residues, shift_dim] and features [n_residues, feature_dim]
-        residue_shifts = data["Residue"].x[:, 3:]  # Shifts start at index 3
-        residue_features = data["Residue"].f
+        # Extract embedded features [n, shift_dim + feature_dim] from .x
+        # After EmbedFeatures: Peak.x = [embedded_shifts (shift_dim), embedded_flags (feature_dim)]
+        # After EmbedFeatures: Residue.x = [embedded_shifts (shift_dim), embedded_flags (feature_dim)]
+        peak_features = data["Peak"].x
+        residue_features = data["Residue"].x
 
         # Determine sizes for message passing
         num_residues = data["Residue"].x.size(0)
         num_peaks = data["Peak"].x.size(0)
 
         # Propagate updates to residues
-        shift_updates, feature_updates = self.propagate(
+        feature_updates = self.propagate(
             edge_index,
-            peak_shifts=peak_shifts,
             peak_features=peak_features,
-            residue_shifts=residue_shifts,
             residue_features=residue_features,
             size=(num_peaks, num_residues)
         )
 
-        # Apply updates to residue nodes (assemble new tensors)
-        old_x = data["Residue"].x
-        new_coords = old_x[:, 0:3]  # Keep coordinates unchanged
-        new_shifts = old_x[:, 3:] + shift_updates
-        data["Residue"].x = torch.cat([new_coords, new_shifts], dim=-1)
-        data["Residue"].f = data["Residue"].f + feature_updates
+        # Update the entire unified .x embedding
+        # NOTE: With unified architecture, .x contains a single embedding (not split)
+        # We update the full embedding with feature_updates
+        data["Residue"].x = data["Residue"].x + feature_updates
 
         return data
 
-    def message(self, peak_shifts_j, peak_features_j, residue_shifts_i, residue_features_i):
+    def message(self, peak_features_j, residue_features_i):
         """
         Compute messages from peak (source) to residue (target).
 
+        Uses ABSOLUTE embedded features (no shift differences).
+
         Args:
-            peak_shifts_j: Peak shifts [n_edges, 2] (source)
-            peak_features_j: Peak features [n_edges, 2] (source)
-            residue_shifts_i: Residue shifts [n_edges, 2] (target)
-            residue_features_i: Residue features [n_edges, 2] (target)
+            peak_features_j: Peak features [n_edges, shift_dim + feature_dim] (source)
+            residue_features_i: Residue features [n_edges, shift_dim + feature_dim] (target)
 
         Returns:
-            Tuple of (shift_deltas, feature_deltas) for residues
+            Feature deltas [n_edges, feature_dim] for residues
         """
-        # Compute shift difference vector (peak - residue) for equivariance
-        # shift_diff is a 2D vector [H, N]
-        shift_diff = peak_shifts_j - residue_shifts_i  # [n_edges, 2]
-
-        # Concatenate features for MLP input (6 total)
+        # Concatenate ABSOLUTE features for MLP input (NO shift differences)
         mlp_input = torch.cat([
-            shift_diff,          # [n_edges, 2]
-            peak_features_j,     # [n_edges, 2]
-            residue_features_i,  # [n_edges, 2]
-        ], dim=-1)  # [n_edges, 6]
+            peak_features_j,      # [n_edges, shift_dim + feature_dim]
+            residue_features_i,   # [n_edges, shift_dim + feature_dim]
+        ], dim=-1)
 
-        # Apply MLP to get scalar weight and feature deltas
-        mlp_output = self.mlp(mlp_input)  # [n_edges, 3]
+        # Apply MLP to get feature deltas
+        feature_deltas = self.mlp(mlp_input)  # [n_edges, feature_dim]
 
-        # Parse output: shift_weight (shift_dim) + feature_deltas (feature_dim)
-        shift_weight = mlp_output[:, :self.shift_dim]  # [n_edges, shift_dim]
-        feature_deltas = mlp_output[:, self.shift_dim:]  # [n_edges, feature_dim]
-
-        # Compute shift deltas by element-wise multiplication with shift difference
-        # This ensures movement is always in the direction of the difference
-        shift_deltas = shift_diff * shift_weight  # [n_edges, shift_dim]
-
-        # Concatenate shift and feature deltas for aggregation
-        # PyG will automatically apply mean aggregation (aggr='mean')
-        return torch.cat([shift_deltas, feature_deltas], dim=-1)  # [n_edges, shift_dim + feature_dim]
+        return feature_deltas
 
     def update(self, aggr_out):
         """
-        Split aggregated updates back into shift and feature components.
+        Return aggregated feature updates.
 
         Args:
-            aggr_out: Aggregated tensor [n_nodes, shift_dim + feature_dim]
+            aggr_out: Aggregated tensor [n_nodes, feature_dim]
 
         Returns:
-            Tuple of (shift_updates, feature_updates)
+            Feature updates [n_nodes, feature_dim]
         """
-        shift_updates = aggr_out[:, :self.shift_dim]  # [n_nodes, shift_dim]
-        feature_updates = aggr_out[:, self.shift_dim:]  # [n_nodes, feature_dim]
-        return shift_updates, feature_updates
+        return aggr_out
 
 
 class AssignedResidueToPeakMessage(MessagePassing):
@@ -222,14 +195,15 @@ class AssignedResidueToPeakMessage(MessagePassing):
     Uses edge type: ("Peak", "assigned_to", "Residue") with flow='target_to_source'
 
     Message computation:
-        1. Extract residue shifts, peak shifts, and features
-        2. Compute shift differences (residue - peak)
-        3. Concatenate shift diffs and features
-        4. Pass through MLP to get peak deltas
-        5. Apply deltas to peak shifts and features (aggregated)
+        1. Extract residue and peak embedded features from .x
+        2. Concatenate absolute features (NO shift differences)
+        3. Pass through MLP to get peak feature deltas
+        4. Apply deltas to peak features (aggregated)
 
-    Equivariance:
-        All calculations use shift differences (never absolute shifts)
+    IMPORTANT CHANGES (Task 1.7 - Remove Translation Invariance):
+    - Uses ABSOLUTE embedded shift features (not shift differences)
+    - Network can learn any necessary invariances from raw feature embeddings
+    - Only updates .x features (feature portion only)
     """
 
     def __init__(self, device, config, hidden_size: int = None, num_layers: int = None):
@@ -254,16 +228,19 @@ class AssignedResidueToPeakMessage(MessagePassing):
             num_layers = config.mlp.num_layers
 
         # Calculate input/output sizes from config
-        shift_dim = config.shift_embed.output_dim
-        feature_dim = config.feature_embed.output_dim
-        # Input: shift_diffs (shift_dim) + residue_features (feature_dim) + peak_features (feature_dim)
-        input_size = shift_dim + 2 * feature_dim
-        # Output: shift_weight (shift_dim) + feature_deltas (feature_dim) for peak
-        output_size = shift_dim + feature_dim
+        # NOTE: With unified architecture, .x is [embed_dim], not split into shift+feature
+        embed_dim = config.embed.embed_dim
 
-        # Store dimensions
-        self.shift_dim = shift_dim
-        self.feature_dim = feature_dim
+        # Input: residue features (embed_dim) + peak features (embed_dim)
+        # NO SHIFT DIFFERENCES - using absolute embedded features
+        input_size = 2 * embed_dim
+
+        # Output: updates to unified embedding (embed_dim) for peak
+        output_size = embed_dim
+
+        # Store dimensions (for backward compatibility)
+        self.shift_dim = embed_dim
+        self.feature_dim = embed_dim
 
         # Build MLP
         layers = []
@@ -292,90 +269,69 @@ class AssignedResidueToPeakMessage(MessagePassing):
             data: HeteroData graph with Peak and Residue nodes
 
         Returns:
-            Updated HeteroData with Peak.x and Peak.f modified
+            Updated HeteroData with Peak.x modified (feature portion only)
         """
         # Get edge indices
         edge_index = data[self.edge_type].edge_index
 
-        # Extract peak shifts [n_peaks, shift_dim] and features [n_peaks, feature_dim]
-        peak_shifts = data["Peak"].x
-        peak_features = data["Peak"].f
-
-        # Extract residue shifts [n_residues, shift_dim] and features [n_residues, feature_dim]
-        residue_shifts = data["Residue"].x[:, 3:]  # Shifts start at index 3
-        residue_features = data["Residue"].f
+        # Extract embedded features [n, shift_dim + feature_dim] from .x
+        peak_features = data["Peak"].x
+        residue_features = data["Residue"].x
 
         # Determine sizes for message passing
         num_residues = data["Residue"].x.size(0)
         num_peaks = data["Peak"].x.size(0)
 
         # Propagate updates to peaks (with reversed flow, size is (target, source))
-        shift_updates, feature_updates = self.propagate(
+        feature_updates = self.propagate(
             edge_index,
-            residue_shifts=residue_shifts,
             residue_features=residue_features,
-            peak_shifts=peak_shifts,
             peak_features=peak_features,
             size=(num_peaks, num_residues)
         )
 
-        # Apply updates to peak nodes (assemble new tensors)
-        data["Peak"].x = data["Peak"].x + shift_updates
-        data["Peak"].f = data["Peak"].f + feature_updates
+        # Update the entire unified .x embedding
+        # NOTE: With unified architecture, .x contains a single embedding (not split)
+        # We update the full embedding with feature_updates
+        data["Peak"].x = data["Peak"].x + feature_updates
 
         return data
 
-    def message(self, residue_shifts_j, residue_features_j, peak_shifts_i, peak_features_i):
+    def message(self, residue_features_j, peak_features_i):
         """
         Compute messages from residue (source in reversed flow) to peak (target).
 
+        Uses ABSOLUTE embedded features (no shift differences).
+
         Args:
-            residue_shifts_j: Residue shifts [n_edges, shift_dim] (source)
-            residue_features_j: Residue features [n_edges, feature_dim] (source)
-            peak_shifts_i: Peak shifts [n_edges, shift_dim] (target)
-            peak_features_i: Peak features [n_edges, feature_dim] (target)
+            residue_features_j: Residue features [n_edges, shift_dim + feature_dim] (source)
+            peak_features_i: Peak features [n_edges, shift_dim + feature_dim] (target)
 
         Returns:
-            Tuple of (shift_deltas, feature_deltas) for peaks
+            Feature deltas [n_edges, feature_dim] for peaks
         """
-        # Compute shift difference vector (residue - peak) for equivariance
-        shift_diff = residue_shifts_j - peak_shifts_i  # [n_edges, shift_dim]
-
-        # Concatenate features for MLP input
+        # Concatenate ABSOLUTE features for MLP input (NO shift differences)
         mlp_input = torch.cat([
-            shift_diff,            # [n_edges, shift_dim]
-            residue_features_j,    # [n_edges, feature_dim]
-            peak_features_i,       # [n_edges, feature_dim]
+            residue_features_j,   # [n_edges, shift_dim + feature_dim]
+            peak_features_i,      # [n_edges, shift_dim + feature_dim]
         ], dim=-1)
 
-        # Apply MLP to get weight vector and feature deltas
-        mlp_output = self.mlp(mlp_input)
+        # Apply MLP to get feature deltas
+        feature_deltas = self.mlp(mlp_input)  # [n_edges, feature_dim]
 
-        # Parse output: shift_weight (shift_dim) + feature_deltas (feature_dim)
-        shift_weight = mlp_output[:, :self.shift_dim]  # [n_edges, shift_dim]
-        feature_deltas = mlp_output[:, self.shift_dim:]  # [n_edges, feature_dim]
-
-        # Compute shift deltas by element-wise multiplication with shift difference
-        # This ensures movement is always in the direction of the difference
-        shift_deltas = shift_diff * shift_weight  # [n_edges, shift_dim]
-
-        # Concatenate shift and feature deltas for aggregation
-        # PyG will automatically apply mean aggregation (aggr='mean')
-        return torch.cat([shift_deltas, feature_deltas], dim=-1)  # [n_edges, shift_dim + feature_dim]
+        return feature_deltas
 
     def update(self, aggr_out):
         """
-        Split aggregated updates back into shift and feature components.
+        Return aggregated feature updates.
 
         Args:
-            aggr_out: Aggregated tensor [n_nodes, shift_dim + feature_dim]
+            aggr_out: Aggregated tensor [n_nodes, feature_dim]
 
         Returns:
-            Tuple of (shift_updates, feature_updates)
+            Feature updates [n_nodes, feature_dim]
         """
-        shift_updates = aggr_out[:, :self.shift_dim]  # [n_nodes, shift_dim]
-        feature_updates = aggr_out[:, self.shift_dim:]  # [n_nodes, feature_dim]
-        return shift_updates, feature_updates
+        return aggr_out
 
 
 # ============================================================================

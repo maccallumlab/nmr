@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import unittest
 import torch
 from nmr.construct import construct_graph
+from nmr.models import ModelConfig
 
 
 class TestTerminologyUpdates(unittest.TestCase):
@@ -22,6 +23,7 @@ class TestTerminologyUpdates(unittest.TestCase):
     def setUp(self):
         """Create a minimal test history for graph construction."""
         self.device = torch.device("cpu")
+        self.config = ModelConfig()
         self.history = {
             "coordinates": [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
             "obs_chemical_shifts": [[8.5, 120.0], [7.8, 118.0]],
@@ -32,7 +34,7 @@ class TestTerminologyUpdates(unittest.TestCase):
 
     def test_node_types_use_new_names(self):
         """Test that graph construction creates nodes with new names (Residue, Peak, Noe)."""
-        data = construct_graph(self.history, self.device)
+        data = construct_graph(self.history, self.device, self.config)
 
         # Verify new node types exist
         self.assertIn("Residue", data.node_types)
@@ -46,7 +48,7 @@ class TestTerminologyUpdates(unittest.TestCase):
 
     def test_triple_names_use_descriptive_names(self):
         """Test that triple node types use full descriptive names."""
-        data = construct_graph(self.history, self.device)
+        data = construct_graph(self.history, self.device, self.config)
 
         # Verify new triple node types exist
         self.assertIn("ResidueResidueNoeTriple", data.node_types)
@@ -66,7 +68,7 @@ class TestTerminologyUpdates(unittest.TestCase):
 
     def test_edge_relations_use_prop_naming(self):
         """Test that edge relations use new naming (prop_first, prop_second, etc.)."""
-        data = construct_graph(self.history, self.device)
+        data = construct_graph(self.history, self.device, self.config)
 
         # Get all edge types as strings
         edge_types = [str(et) for et in data.edge_types]

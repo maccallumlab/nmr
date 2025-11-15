@@ -5,15 +5,26 @@ This module constructs heterogeneous graphs from NMR data for chemical shift ass
 using Graph Neural Networks. The graph structure includes:
 
 Node Types:
-- Residue: Protein residues with coordinates [x,y,z] and predicted shifts [H,N]
-- Peak: Observed chemical shifts [H,N]
-- Noe: NOE distance constraints [N, H', H"]
+- Residue: Protein residues with raw data (.xyz, .shifts, .flags) and working features (.x)
+- Peak: Observed chemical shifts with raw data (.shifts, .flags) and working features (.x)
+- Noe: NOE distance constraints with raw data (.shifts) and working features (.x)
 - Triple nodes: Four types representing different relationship configurations:
   * ResidueResidueNoeTriple: (Residue, Residue, Noe) - Updates coordinates and shifts
   * ResiduePeakNoeTriple: (Residue, Peak, Noe) - Updates shifts only
   * PeakResidueNoeTriple: (Peak, Residue, Noe) - Updates shifts only
   * PeakPeakNoeTriple: (Peak, Peak, Noe) - Updates shifts only
 - Value aggregation nodes: VALUE_NOE, VALUE_SHIFT, VALUE_RES
+
+Attribute Structure:
+- Raw data attributes (IMMUTABLE, set once during construction):
+  * Residue.xyz [n, 3]: cartesian coordinates
+  * Residue.shifts [n, 2]: predicted chemical shifts
+  * Residue.flags [n, 1]: assignment status (previously assigned)
+  * Peak.shifts [n, 2]: observed chemical shifts
+  * Peak.flags [n, 2]: assignment status (to be assigned, previously assigned)
+  * Noe.shifts [n, 3]: NOE shift values
+- Working feature attributes (updated during message passing):
+  * .x for all node types: embedded features created by EmbedFeatures layer
 
 Edge Types:
 - Bidirectional propagation edges: Used for both gather (source → triple) and scatter (triple → source)
@@ -31,25 +42,30 @@ import torch
 from torch_geometric.data import HeteroData
 from time import time
 
+from nmr.models.network import ModelConfig
 
-def construct_graph(history: Dict[str, Any], device: torch.device | str) -> HeteroData:
+
+def construct_graph(
+    history: Dict[str, Any], device: torch.device | str, config: ModelConfig
+) -> HeteroData:
     """
     Constructs a complete heterogeneous graph from a history state.
 
     Args:
         history: Dictionary containing coordinates, shifts, NOEs, and assignment state
         device: Device to place tensors on ('cpu' or 'cuda')
+        config: ModelConfig containing embed_dim for .x initialization
 
     Returns:
         HeteroData graph with all nodes and edges constructed
     """
-    data = construct_node_data(history, device)
+    data = construct_node_data(history, device, config)
     data = construct_edges(data, device)
     return data
 
 
 def construct_node_data(
-    histories: Dict[str, Any], device: torch.device | str
+    histories: Dict[str, Any], device: torch.device | str, config
 ) -> HeteroData:
     """
     Builds graph nodes from input histories.
@@ -59,14 +75,15 @@ def construct_node_data(
     Args:
         histories: Dictionary containing coordinates, shifts, NOEs, and assignment state
         device: Device to place tensors on ('cpu' or 'cuda')
+        config: ModelConfig containing embed_dim for .x initialization
 
     Returns:
         HeteroData graph with all nodes constructed
     """
     data = HeteroData()
-    data = _construct_data_nodes(data, histories, device)
-    data = _construct_triple_nodes(data, device)
-    data = _construct_value_nodes(data, device)
+    data = _construct_data_nodes(data, histories, device, config)
+    data = _construct_triple_nodes(data, device, config)
+    data = _construct_value_nodes(data, device, config)
     data = _construct_node_features(data, histories)
     data.shift_to_assign = torch.tensor(
         [int(histories["shift_to_assign"])], dtype=torch.long, device=device
@@ -88,9 +105,9 @@ def construct_edges(data: HeteroData, device: torch.device | str) -> HeteroData:
     Returns:
         HeteroData graph with all edges constructed
     """
-    num_noe = len(data["Noe"].x)
-    num_peak = len(data["Peak"].x)
-    num_residue = len(data["Residue"].x)
+    num_noe = len(data["Noe"].shifts)
+    num_peak = len(data["Peak"].shifts)
+    num_residue = len(data["Residue"].xyz)
 
     # Add all edge types for each triple configuration
     _add_triple_edges(
@@ -110,43 +127,78 @@ def construct_edges(data: HeteroData, device: torch.device | str) -> HeteroData:
 
 
 def _construct_data_nodes(
-    data: HeteroData, histories: Dict[str, Any], device: torch.device | str
+    data: HeteroData,
+    histories: Dict[str, Any],
+    device: torch.device | str,
+    config: ModelConfig,
 ) -> HeteroData:
     """
-    Constructs Noe, Peak, and Residue nodes with initial features.
+    Constructs Noe, Peak, and Residue nodes with raw data attributes.
+
+    Creates IMMUTABLE raw data attributes:
+    - Residue.xyz [n, 3]: coordinates
+    - Residue.shifts [n, 2]: predicted shift values
+    - Peak.shifts [n, 2]: observed shift values
+    - Noe.shifts [n, 3]: NOE shift values
+
+    Note: .flags attributes are set in _construct_node_features based on assignment state
 
     Args:
         data: HeteroData graph to add nodes to
         histories: Dictionary containing coordinates, shifts, and NOEs
         device: Device to place tensors on
+        config: ModelConfig containing embed_dim for .x initialization
 
     Returns:
         HeteroData with data nodes added
     """
-    data["Noe"].x = torch.tensor(histories["noes"], dtype=torch.float32, device=device)
-    data["Noe"].f = torch.zeros(
-        (len(histories["noes"]), 2), dtype=torch.float32, device=device
-    )
-    data["Peak"].x = torch.tensor(
+    # Extract coordinates from histories
+    # histories["coordinates"] is [x, y, z, H, N] format
+    coords = torch.tensor(histories["coordinates"], dtype=torch.float32, device=device)
+
+    # Residue raw data attributes (IMMUTABLE after this initialization)
+    # Extract and normalize coordinates to zero mean, unit variance
+    raw_coords = coords[:, 0:3]  # [n, 3]
+    coords_mean = raw_coords.mean(dim=0, keepdim=True)
+    coords_std = raw_coords.std(dim=0, keepdim=True) + 1e-5
+    data["Residue"].xyz = (
+        raw_coords - coords_mean
+    ) / coords_std  # Normalized coordinates
+    data["Residue"].shifts = coords[
+        :, 3:5
+    ]  # [n, 2] - predicted shifts [H, N] (raw, not normalized yet)
+
+    # Peak raw data attributes (IMMUTABLE)
+    peak_shifts = torch.tensor(
         histories["obs_chemical_shifts"], dtype=torch.float32, device=device
+    )  # [n, 2] - observed shifts [H, N]
+    data["Peak"].shifts = peak_shifts
+
+    # NOE raw data attributes (IMMUTABLE)
+    noe_shifts = torch.tensor(
+        histories["noes"], dtype=torch.float32, device=device
+    )  # [n, 3] - NOE shifts [N, H', H"]
+    data["Noe"].shifts = noe_shifts
+
+    # Initialize .x attributes to zeros so PyG can batch/unbatch them
+    # EmbedFeatures layer will overwrite these with actual embeddings
+    embed_dim = config.embed.embed_dim
+    data["Residue"].x = torch.zeros(
+        (len(coords), embed_dim), dtype=torch.float32, device=device
     )
-    data["Peak"].f = torch.zeros(
-        (len(histories["obs_chemical_shifts"]), 2),
-        dtype=torch.float32,
-        device=device,
+    data["Peak"].x = torch.zeros(
+        (len(peak_shifts), embed_dim), dtype=torch.float32, device=device
     )
-    # Residue.x = [coordinates (3), predicted_shifts (2)] = [5 features total]
-    # Coordinates already contains [x, y, z, H, N] as 5 features
-    data["Residue"].x = torch.tensor(
-        histories["coordinates"], dtype=torch.float32, device=device
+    data["Noe"].x = torch.zeros(
+        (len(noe_shifts), embed_dim), dtype=torch.float32, device=device
     )
-    data["Residue"].f = torch.zeros(
-        (len(histories["coordinates"]), 2), dtype=torch.float32, device=device
-    )
+
     return data
 
 
-def _construct_triple_nodes(data: HeteroData, device: torch.device | str) -> HeteroData:
+def _construct_triple_nodes(
+    data: HeteroData, device: torch.device | str, config: ModelConfig
+) -> HeteroData:
     """
     Constructs triple nodes for all four triple types.
 
@@ -156,54 +208,46 @@ def _construct_triple_nodes(data: HeteroData, device: torch.device | str) -> Het
     Args:
         data: HeteroData graph to add triple nodes to
         device: Device to place tensors on
+        config: ModelConfig containing embed_dim for .x initialization
 
     Returns:
         HeteroData with triple nodes added
     """
-    num_noe = len(data["Noe"].x)
-    num_peak = len(data["Peak"].x)
-    num_residue = len(data["Residue"].x)
+    num_noe = len(data["Noe"].shifts)
+    num_peak = len(data["Peak"].shifts)
+    num_residue = len(data["Residue"].xyz)
+    embed_dim = config.embed.embed_dim
 
     # ResidueResidueNoeTriple: All combinations of (residue_i, residue_j, noe_k)
     num_res_res_noe = num_residue * num_residue * num_noe
     data["ResidueResidueNoeTriple"].x = torch.zeros(
-        (num_res_res_noe, 1), dtype=torch.float32, device=device
-    )
-    data["ResidueResidueNoeTriple"].f = torch.zeros(
-        (num_res_res_noe, 2), dtype=torch.float32, device=device
+        (num_res_res_noe, embed_dim), dtype=torch.float32, device=device
     )
 
     # ResiduePeakNoeTriple: All combinations of (residue_i, peak_j, noe_k)
     num_res_peak_noe = num_residue * num_peak * num_noe
     data["ResiduePeakNoeTriple"].x = torch.zeros(
-        (num_res_peak_noe, 1), dtype=torch.float32, device=device
-    )
-    data["ResiduePeakNoeTriple"].f = torch.zeros(
-        (num_res_peak_noe, 2), dtype=torch.float32, device=device
+        (num_res_peak_noe, embed_dim), dtype=torch.float32, device=device
     )
 
     # PeakResidueNoeTriple: All combinations of (peak_i, residue_j, noe_k)
     num_peak_res_noe = num_peak * num_residue * num_noe
     data["PeakResidueNoeTriple"].x = torch.zeros(
-        (num_peak_res_noe, 1), dtype=torch.float32, device=device
-    )
-    data["PeakResidueNoeTriple"].f = torch.zeros(
-        (num_peak_res_noe, 2), dtype=torch.float32, device=device
+        (num_peak_res_noe, embed_dim), dtype=torch.float32, device=device
     )
 
     # PeakPeakNoeTriple: All combinations of (peak_i, peak_j, noe_k)
     num_peak_peak_noe = num_peak * num_peak * num_noe
     data["PeakPeakNoeTriple"].x = torch.zeros(
-        (num_peak_peak_noe, 1), dtype=torch.float32, device=device
-    )
-    data["PeakPeakNoeTriple"].f = torch.zeros(
-        (num_peak_peak_noe, 2), dtype=torch.float32, device=device
+        (num_peak_peak_noe, embed_dim), dtype=torch.float32, device=device
     )
 
     return data
 
 
-def _construct_value_nodes(data: HeteroData, device: torch.device | str) -> HeteroData:
+def _construct_value_nodes(
+    data: HeteroData, device: torch.device | str, config: ModelConfig
+) -> HeteroData:
     """
     Constructs value aggregation nodes for value prediction head.
 
@@ -213,38 +257,62 @@ def _construct_value_nodes(data: HeteroData, device: torch.device | str) -> Hete
     Args:
         data: HeteroData graph to add value nodes to
         device: Device to place tensors on
+        config: ModelConfig containing embed_dim for .x initialization
 
     Returns:
         HeteroData with value nodes added
     """
-    data["VALUE_NOE"].x = torch.zeros((1, 1), dtype=torch.float32, device=device)
-    data["VALUE_SHIFT"].x = torch.zeros((1, 1), dtype=torch.float32, device=device)
-    data["VALUE_RES"].x = torch.zeros((1, 1), dtype=torch.float32, device=device)
+    embed_dim = config.embed.embed_dim
+    data["VALUE_NOE"].x = torch.zeros(
+        (1, embed_dim), dtype=torch.float32, device=device
+    )
+    data["VALUE_SHIFT"].x = torch.zeros(
+        (1, embed_dim), dtype=torch.float32, device=device
+    )
+    data["VALUE_RES"].x = torch.zeros(
+        (1, embed_dim), dtype=torch.float32, device=device
+    )
     return data
 
 
 def _construct_node_features(data: HeteroData, histories: Dict[str, Any]) -> HeteroData:
     """
-    Initializes node features based on assignment state.
+    Initializes node .flags attributes based on assignment state.
 
-    Sets feature flags on Peak and Residue nodes to indicate which nodes
-    are currently being assigned or have been assigned.
+    Sets IMMUTABLE flag attributes:
+    - Residue.flags [n, 1]: previously assigned flag
+    - Peak.flags [n, 2]: (to be assigned flag, previously assigned flag)
+    - NOE nodes have NO flags
 
     Args:
         data: HeteroData graph with nodes
         histories: Dictionary containing assignment state
 
     Returns:
-        HeteroData with node features initialized
+        HeteroData with node flags initialized
     """
+    num_residues = data["Residue"].xyz.shape[0]
+    num_peaks = data["Peak"].shifts.shape[0]
+    device = data["Residue"].xyz.device
+
+    # Initialize flags tensors
+    data["Residue"].flags = torch.zeros(
+        (num_residues, 1), dtype=torch.float32, device=device
+    )
+    data["Peak"].flags = torch.zeros((num_peaks, 2), dtype=torch.float32, device=device)
+
     # Mark the peak being assigned
     shift_to_assign = int(histories["shift_to_assign"])
-    data["Peak"].f[shift_to_assign, 0] = 1.0
+    data["Peak"].flags[shift_to_assign, 0] = 1.0  # to be assigned flag
 
     # Mark assigned peaks and residues
     for shift_idx, residue_idx in histories["assignments"].items():
-        data["Peak"].f[int(shift_idx), 1] = 1.0
-        data["Residue"].f[int(residue_idx), 1] = 1.0
+        shift_idx = int(shift_idx)
+        residue_idx = int(residue_idx)
+
+        # Update flags
+        data["Peak"].flags[shift_idx, 1] = 1.0  # previously assigned flag
+        data["Residue"].flags[residue_idx, 0] = 1.0  # previously assigned flag
 
     # Add edges for existing assignments (peak -> residue mappings)
     # Always add the edge type, even if empty, for consistent graph structure
@@ -254,12 +322,12 @@ def _construct_node_features(data: HeteroData, histories: Dict[str, Any]) -> Het
         data["Peak", "assigned_to", "Residue"].edge_index = torch.tensor(
             [peak_indices, residue_indices],
             dtype=torch.long,
-            device=data["Peak"].x.device,
+            device=device,
         )
     else:
         # Create empty edge_index with shape [2, 0]
         data["Peak", "assigned_to", "Residue"].edge_index = torch.empty(
-            (2, 0), dtype=torch.long, device=data["Peak"].x.device
+            (2, 0), dtype=torch.long, device=device
         )
 
     return data
@@ -295,10 +363,14 @@ def _get_triple_edges(
     # Each triple (i, j, k) corresponds to edge index: i*(source1*source2) + j*source2 + k
 
     # NOE indices: [0,0,...,0, 1,1,...,1, 2,2,...,2, ...] (each repeated source1*source2 times)
-    noe_indices = torch.arange(num_noe, device=device).repeat_interleave(source1 * source2)
+    noe_indices = torch.arange(num_noe, device=device).repeat_interleave(
+        source1 * source2
+    )
 
     # Source1 indices: [0,0,...,0, 1,1,...,1, ...] (each repeated source2 times, pattern repeats num_noe times)
-    source1_indices = torch.arange(source1, device=device).repeat_interleave(source2).repeat(num_noe)
+    source1_indices = (
+        torch.arange(source1, device=device).repeat_interleave(source2).repeat(num_noe)
+    )
 
     # Source2 indices: [0,1,2,...,source2-1, 0,1,2,...,source2-1, ...] (cycles continuously)
     source2_indices = torch.arange(source2, device=device).repeat(num_noe * source1)

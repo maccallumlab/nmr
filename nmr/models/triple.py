@@ -15,15 +15,24 @@ This architecture eliminates runtime conditionals by making all behavioral choic
 explicit at construction time.
 
 Triple Types:
-- ResidueResidueNoeTriple: (Residue, Residue, Noe) - Updates coordinates + shifts
-- ResiduePeakNoeTriple: (Residue, Peak, Noe) - Updates shifts only
-- PeakResidueNoeTriple: (Peak, Residue, Noe) - Updates shifts only
-- PeakPeakNoeTriple: (Peak, Peak, Noe) - Updates shifts only
+- ResidueResidueNoeTriple: (Residue, Residue, Noe)
+- ResiduePeakNoeTriple: (Residue, Peak, Noe)
+- PeakResidueNoeTriple: (Peak, Residue, Noe)
+- PeakPeakNoeTriple: (Peak, Peak, Noe)
 
 Node Type Naming:
-- Residue: Protein residues with coordinates [x,y,z] and shifts [H,N]
-- Peak: Observed chemical shifts [H,N]
-- Noe: NOE constraints [N, H', H"]
+- Residue:
+    Protein residues with coordinates .xyz [x,y,z], shifts .shifts [H,N], and features .x
+- Peak: Observed chemical shifts .shifts [H,N] and features .x
+- Noe: NOE constraints .shifts [N, H', H"] and features .x
+
+NEW ATTRIBUTE STRUCTURE (after refactoring):
+- Raw data attributes (IMMUTABLE, set once during construction):
+  * .xyz: coordinates (Residue only)
+  * .shifts: shift values (all node types)
+  * .flags: assignment status (Residue and Peak only)
+- Working feature attributes (updated during message passing):
+  * .x: embedded features created by EmbedFeatures layer
 
 Edge Naming Conventions:
 - Bidirectional propagation edges: (source_node, "prop_first"/"prop_second"/"prop_noe", triple_type)
@@ -43,62 +52,57 @@ from torch_geometric.nn import MessagePassing
 # configurable shift_dim and feature_dim parameters
 
 
-def residue_update_input_size(shift_dim, feature_dim):
+def residue_update_input_size(feature_dim):
     """
     Calculate input size for ResidueUpdate MLP.
 
     Components:
     - dist_squared: 1
-    - shift differences: 3*shift_dim pairwise differences
-      (diff_first_to_second, diff_first_to_noe, diff_second_to_noe)
     - features: 3*feature_dim (first_features, second_features, noe_features)
 
-    Returns: 1 + 3*shift_dim + 3*feature_dim
+    Returns: 1 + 3*feature_dim
     """
-    return 1 + 3 * shift_dim + 3 * feature_dim
+    return 1 + 3 * feature_dim
 
 
-def residue_update_output_size(shift_dim, feature_dim):
+def residue_update_output_size(feature_dim):
     """
     Calculate output size for ResidueUpdate MLP.
 
     Components:
-    - coord_weights: 2 (w_coord_first, w_coord_second)
-    - shift_weights: 6 (w1-w6, scalar weights for each shift difference)
     - feature_deltas: 3*feature_dim (delta_first_features, delta_second_features, delta_noe_features)
 
-    Returns: coord_weights(2) + shift_weights(6) + feature_deltas(3*feature_dim)
+    Returns: 3*feature_dim
+
+    Note: No coordinate updates or shift updates - only .x features are modified
     """
-    return 2 + 6 + 3 * feature_dim
+    return 3 * feature_dim
 
 
-def peak_update_input_size(shift_dim, feature_dim):
+def peak_update_input_size(feature_dim):
     """
     Calculate input size for PeakUpdate MLP.
 
     Components:
-    - shift differences: 3*shift_dim pairwise differences
-      (diff_first_to_second, diff_first_to_noe, diff_second_to_noe)
     - features: 3*feature_dim (first_features, second_features, noe_features)
 
-    Returns: 3*shift_dim + 3*feature_dim
+    Returns: 3*feature_dim
     Note: NO dist_squared (peaks have no coordinates).
     """
-    return 3 * shift_dim + 3 * feature_dim
+    return 3 * feature_dim
 
 
-def peak_update_output_size(shift_dim, feature_dim):
+def peak_update_output_size(feature_dim):
     """
     Calculate output size for PeakUpdate MLP.
 
     Components:
-    - shift_weights: 6 (w1-w6, scalar weights for each shift difference)
     - feature_deltas: 3*feature_dim (delta_first_features, delta_second_features, delta_noe_features)
 
-    Returns: shift_weights(6) + feature_deltas(3*feature_dim)
-    Note: NO coord_weights (peaks have no coordinates).
+    Returns: 3*feature_dim
+    Note: No coordinate or shift updates - only .x features are modified
     """
-    return 6 + 3 * feature_dim
+    return 3 * feature_dim
 
 
 # ============================================================================
@@ -110,13 +114,12 @@ def peak_update_output_size(shift_dim, feature_dim):
 
 class FirstResidueGather(MessagePassing):
     """
-    Extract coordinates, shifts, and features from residues in first position.
+    Extract coordinates and features from residues in first position.
 
     Uses edge type: ("Residue", "prop_first", triple_type)
     Sets attributes on triple nodes:
-        - first_coords: [n, 3] coordinates
-        - first_shifts: [n, shift_dim] chemical shift embeddings
-        - first_features: [n, feature_dim] assignment feature embeddings
+        - first_coords: [n, 3] coordinates (from .xyz)
+        - first_features: [n, feature_dim] assignment features (from .x)
     """
 
     def __init__(self, triple_type: str):
@@ -125,6 +128,7 @@ class FirstResidueGather(MessagePassing):
 
         Args:
             triple_type: Name of target triple node type
+            config: ModelConfig with dimension settings
         """
         super().__init__(aggr="mean")
         self.triple_type = triple_type
@@ -140,14 +144,11 @@ class FirstResidueGather(MessagePassing):
         Returns:
             Updated HeteroData with first_coords, first_shifts, first_features set
         """
-        # Extract coordinates [n, 3] from Residue.x[:, 0:3]
-        coords = data["Residue"].x[:, 0:3]
+        # Extract coordinates [n, 3] from IMMUTABLE .xyz attribute
+        coords = data["Residue"].xyz
 
-        # Extract shifts [n, shift_dim] from Residue.x[:, 3:]
-        shifts = data["Residue"].x[:, 3:]
-
-        # Extract features [n, feature_dim] from Residue.f
-        features = data["Residue"].f
+        # Extract unified embedded features [n, embed_dim] from .x
+        features = data["Residue"].x  # [n, embed_dim]
 
         # Get edge indices for this gather operation
         edge_index = data[self.edge_type].edge_index
@@ -158,11 +159,6 @@ class FirstResidueGather(MessagePassing):
         # Propagate coordinates with explicit size
         data[self.triple_type].first_coords = self.propagate(
             edge_index, x=coords, size=(coords.size(0), num_triples)
-        )
-
-        # Propagate shifts
-        data[self.triple_type].first_shifts = self.propagate(
-            edge_index, x=shifts, size=(shifts.size(0), num_triples)
         )
 
         # Propagate features
@@ -183,9 +179,7 @@ class FirstPeakGather(MessagePassing):
 
     Uses edge type: ("Peak", "prop_first", triple_type)
     Sets attributes on triple nodes:
-        - first_shifts: [n, shift_dim] chemical shift embeddings
-        - first_features: [n, feature_dim] assignment feature embeddings
-    Note: Peaks have NO coordinates
+        - first_features: [n, feature_dim] assignment features (from .x)
     """
 
     def __init__(self, triple_type: str):
@@ -194,6 +188,7 @@ class FirstPeakGather(MessagePassing):
 
         Args:
             triple_type: Name of target triple node type
+            config: ModelConfig with dimension settings
         """
         super().__init__(aggr="mean")
         self.triple_type = triple_type
@@ -207,24 +202,16 @@ class FirstPeakGather(MessagePassing):
             data: HeteroData graph with Peak nodes and gather edges
 
         Returns:
-            Updated HeteroData with first_shifts, first_features set
+            Updated HeteroData with first_features set
         """
-        # Extract shifts [n, shift_dim] from Peak.x
-        shifts = data["Peak"].x
-
-        # Extract features [n, feature_dim] from Peak.f
-        features = data["Peak"].f
+        # Extract unified embedded features [n, embed_dim] from .x
+        features = data["Peak"].x  # [n, embed_dim]
 
         # Get edge indices for this gather operation
         edge_index = data[self.edge_type].edge_index
 
         # Determine number of target nodes (triple nodes)
         num_triples = data[self.triple_type].x.size(0)
-
-        # Propagate shifts with explicit size
-        data[self.triple_type].first_shifts = self.propagate(
-            edge_index, x=shifts, size=(shifts.size(0), num_triples)
-        )
 
         # Propagate features
         data[self.triple_type].first_features = self.propagate(
@@ -240,13 +227,12 @@ class FirstPeakGather(MessagePassing):
 
 class SecondResidueGather(MessagePassing):
     """
-    Extract coordinates, shifts, and features from residues in second position.
+    Extract coordinates and features from residues in second position.
 
     Uses edge type: ("Residue", "prop_second", triple_type)
     Sets attributes on triple nodes:
-        - second_coords: [n, 3] coordinates
-        - second_shifts: [n, shift_dim] chemical shift embeddings
-        - second_features: [n, feature_dim] assignment feature embeddings
+        - second_coords: [n, 3] coordinates (from .xyz)
+        - second_features: [n, feature_dim] assignment features (from .x)
     """
 
     def __init__(self, triple_type: str):
@@ -255,6 +241,7 @@ class SecondResidueGather(MessagePassing):
 
         Args:
             triple_type: Name of target triple node type
+            config: ModelConfig with dimension settings
         """
         super().__init__(aggr="mean")
         self.triple_type = triple_type
@@ -268,16 +255,14 @@ class SecondResidueGather(MessagePassing):
             data: HeteroData graph with Residue nodes and gather edges
 
         Returns:
-            Updated HeteroData with second_coords, second_shifts, second_features set
+            Updated HeteroData with second_coords and second_features set
         """
-        # Extract coordinates [n, 3] from Residue.x[:, 0:3]
-        coords = data["Residue"].x[:, 0:3]
+        # Extract coordinates [n, 3] from IMMUTABLE .xyz attribute
+        coords = data["Residue"].xyz
 
-        # Extract shifts [n, shift_dim] from Residue.x[:, 3:]
-        shifts = data["Residue"].x[:, 3:]
-
-        # Extract features [n, feature_dim] from Residue.f
-        features = data["Residue"].f
+        # Extract unified embedded features [n, embed_dim] from .x
+        # NOTE: With unified architecture, we use the full .x for both shifts and features
+        features = data["Residue"].x  # [n, embed_dim]
 
         # Get edge indices for this gather operation
         edge_index = data[self.edge_type].edge_index
@@ -288,11 +273,6 @@ class SecondResidueGather(MessagePassing):
         # Propagate coordinates with explicit size
         data[self.triple_type].second_coords = self.propagate(
             edge_index, x=coords, size=(coords.size(0), num_triples)
-        )
-
-        # Propagate shifts
-        data[self.triple_type].second_shifts = self.propagate(
-            edge_index, x=shifts, size=(shifts.size(0), num_triples)
         )
 
         # Propagate features
@@ -309,13 +289,11 @@ class SecondResidueGather(MessagePassing):
 
 class SecondPeakGather(MessagePassing):
     """
-    Extract shifts and features from peaks in second position.
+    Extract features from peaks in second position.
 
     Uses edge type: ("Peak", "prop_second", triple_type)
     Sets attributes on triple nodes:
-        - second_shifts: [n, shift_dim] chemical shift embeddings
-        - second_features: [n, feature_dim] assignment feature embeddings
-    Note: Peaks have NO coordinates
+        - second_features: [n, feature_dim] assignment features (from .x)
     """
 
     def __init__(self, triple_type: str):
@@ -324,6 +302,7 @@ class SecondPeakGather(MessagePassing):
 
         Args:
             triple_type: Name of target triple node type
+            config: ModelConfig with dimension settings
         """
         super().__init__(aggr="mean")
         self.triple_type = triple_type
@@ -337,24 +316,16 @@ class SecondPeakGather(MessagePassing):
             data: HeteroData graph with Peak nodes and gather edges
 
         Returns:
-            Updated HeteroData with second_shifts, second_features set
+            Updated HeteroData with second_features set
         """
-        # Extract shifts [n, shift_dim] from Peak.x
-        shifts = data["Peak"].x
-
-        # Extract features [n, feature_dim] from Peak.f
-        features = data["Peak"].f
+        # Extract unified embedded features [n, embed_dim] from .x
+        features = data["Peak"].x  # [n, embed_dim]
 
         # Get edge indices for this gather operation
         edge_index = data[self.edge_type].edge_index
 
         # Determine number of target nodes (triple nodes)
         num_triples = data[self.triple_type].x.size(0)
-
-        # Propagate shifts with explicit size
-        data[self.triple_type].second_shifts = self.propagate(
-            edge_index, x=shifts, size=(shifts.size(0), num_triples)
-        )
 
         # Propagate features
         data[self.triple_type].second_features = self.propagate(
@@ -370,11 +341,10 @@ class SecondPeakGather(MessagePassing):
 
 class NoeGather(MessagePassing):
     """
-    Extract NOE shifts and features from NOE constraint nodes.
+    Extract NOE features from NOE constraint nodes.
 
     Uses edge type: ("Noe", "prop_noe", triple_type)
     Sets attributes on triple nodes:
-        - noe_shifts: [n, shift_dim] NOE shift embeddings
         - noe_features: [n, feature_dim] NOE feature embeddings
     """
 
@@ -384,6 +354,7 @@ class NoeGather(MessagePassing):
 
         Args:
             triple_type: Name of target triple node type
+            config: ModelConfig with dimension settings
         """
         super().__init__(aggr="mean")
         self.triple_type = triple_type
@@ -397,24 +368,16 @@ class NoeGather(MessagePassing):
             data: HeteroData graph with Noe nodes and gather edges
 
         Returns:
-            Updated HeteroData with noe_shifts, noe_features set
+            Updated HeteroData with noe_features set
         """
-        # Extract NOE shifts [n, shift_dim] from Noe.x (embedded from original 3D NOE features)
-        shifts = data["Noe"].x
-
-        # Extract features [n, feature_dim] from Noe.f
-        features = data["Noe"].f
+        # Extract embedded NOE features from .x
+        features = data["Noe"].x  # [n, embed_dim]
 
         # Get edge indices for this gather operation
         edge_index = data[self.edge_type].edge_index
 
         # Determine number of target nodes (triple nodes)
         num_triples = data[self.triple_type].x.size(0)
-
-        # Propagate shifts with explicit size
-        data[self.triple_type].noe_shifts = self.propagate(
-            edge_index, x=shifts, size=(shifts.size(0), num_triples)
-        )
 
         # Propagate features
         data[self.triple_type].noe_features = self.propagate(
@@ -434,7 +397,7 @@ class NoeGather(MessagePassing):
 # These classes compute deltas on triple nodes using MLPs (standard nn.Module)
 
 
-def _create_empty_deltas(device, num_triples=0, shift_dim=2, feature_dim=2):
+def _create_empty_deltas(device, num_triples=0, feature_dim=2):
     """
     Create empty delta tensors for triple nodes with zero instances.
 
@@ -444,28 +407,17 @@ def _create_empty_deltas(device, num_triples=0, shift_dim=2, feature_dim=2):
     Args:
         device: torch device (CPU or CUDA)
         num_triples: Number of triple nodes (typically 0 for empty sets)
-        shift_dim: Dimension of shift embeddings (default: 2 for backward compatibility)
         feature_dim: Dimension of feature embeddings (default: 2 for backward compatibility)
 
     Returns:
-        Dictionary with 8 delta tensors:
-            - delta_first_coords: [num_triples, 3]
-            - delta_first_shifts: [num_triples, shift_dim]
+        Dictionary with 3 delta tensors:
             - delta_first_features: [num_triples, feature_dim]
-            - delta_second_coords: [num_triples, 3]
-            - delta_second_shifts: [num_triples, shift_dim]
             - delta_second_features: [num_triples, feature_dim]
-            - delta_noe_shifts: [num_triples, shift_dim]
             - delta_noe_features: [num_triples, feature_dim]
     """
     return {
-        'delta_first_coords': torch.zeros((num_triples, 3), dtype=torch.float32, device=device),
-        'delta_first_shifts': torch.zeros((num_triples, shift_dim), dtype=torch.float32, device=device),
         'delta_first_features': torch.zeros((num_triples, feature_dim), dtype=torch.float32, device=device),
-        'delta_second_coords': torch.zeros((num_triples, 3), dtype=torch.float32, device=device),
-        'delta_second_shifts': torch.zeros((num_triples, shift_dim), dtype=torch.float32, device=device),
         'delta_second_features': torch.zeros((num_triples, feature_dim), dtype=torch.float32, device=device),
-        'delta_noe_shifts': torch.zeros((num_triples, shift_dim), dtype=torch.float32, device=device),
         'delta_noe_features': torch.zeros((num_triples, feature_dim), dtype=torch.float32, device=device),
     }
 
@@ -475,14 +427,9 @@ class ResidueUpdate(nn.Module):
     Compute deltas for ResidueResidueNoeTriple using MLP.
 
     MLP Architecture:
-        Input: variable (dist_squared + 3*shift_dim + 3*feature_dim)
+        Input: variable (dist_squared + 3*feature_dim)
         Hidden: configurable layers with ReLU activations
-        Output: variable (2 coord weights + 6*shift_dim + 3*feature_dim)
-
-    Equivariance:
-        - Calculations are based on distances and differences between shifts
-        - Coordinate deltas are computed as difference * learned_weights to maintain
-          rotation/translation equivariance.
+        Output: variable (3*feature_dim)
     """
 
     def __init__(self, triple_type: str, device, config):
@@ -504,13 +451,11 @@ class ResidueUpdate(nn.Module):
         num_layers = config.mlp.num_layers
 
         # Calculate input/output sizes from config
-        shift_dim = config.shift_embed.output_dim
-        feature_dim = config.feature_embed.output_dim
-        input_size = residue_update_input_size(shift_dim, feature_dim)
-        output_size = residue_update_output_size(shift_dim, feature_dim)
+        feature_dim = config.embed.embed_dim
+        input_size = residue_update_input_size(feature_dim)
+        output_size = residue_update_output_size(feature_dim)
 
         # Store dimensions for later use
-        self.shift_dim = shift_dim
         self.feature_dim = feature_dim
 
         # Build MLP
@@ -538,9 +483,6 @@ class ResidueUpdate(nn.Module):
         Compute deltas for triple nodes.
 
         After embeddings, dimensions are:
-        - first_shifts: [n, shift_dim]
-        - second_shifts: [n, shift_dim]
-        - noe_shifts: [n, shift_dim]
         - first_features: [n, feature_dim]
         - second_features: [n, feature_dim]
         - noe_features: [n, feature_dim]
@@ -553,39 +495,28 @@ class ResidueUpdate(nn.Module):
         """
         # Get gathered attributes (dimensions now variable)
         first_coords = data[self.triple_type].first_coords  # [n, 3]
-        first_shifts = data[self.triple_type].first_shifts  # [n, shift_dim]
         first_features = data[self.triple_type].first_features  # [n, feature_dim]
         second_coords = data[self.triple_type].second_coords  # [n, 3]
-        second_shifts = data[self.triple_type].second_shifts  # [n, shift_dim]
         second_features = data[self.triple_type].second_features  # [n, feature_dim]
-        noe_shifts = data[self.triple_type].noe_shifts  # [n, shift_dim]
         noe_features = data[self.triple_type].noe_features  # [n, feature_dim]
 
-        num_triples = first_shifts.size(0)
+        num_triples = first_features.size(0)
 
         # Handle empty triple sets using helper function
         if num_triples == 0:
-            deltas = _create_empty_deltas(self.device, num_triples=0, shift_dim=self.shift_dim, feature_dim=self.feature_dim)
+            deltas = _create_empty_deltas(self.device, num_triples=0, feature_dim=self.feature_dim)
             for key, value in deltas.items():
                 setattr(data[self.triple_type], key, value)
             return data
 
-        # Calculate relative distance and dist_squared for equivariance
-        rel_dist, dist_squared = calc_res_distance(first_coords, second_coords)
-
-        # Compute shift differences BEFORE MLP input (for translation equivariance)
-        diff_first_to_second = second_shifts - first_shifts  # [n, shift_dim]
-        diff_first_to_noe = noe_shifts - first_shifts  # [n, shift_dim]
-        diff_second_to_noe = noe_shifts - second_shifts  # [n, shift_dim]
+        # Calculate relative distance and dist_squared for distance-based attention
+        dist_squared = calc_res_distance(first_coords, second_coords)
 
         # Concatenate all features for MLP input
-        # Input: dist_squared + 3*shift_dim (differences) + 3*feature_dim
+        # Input: dist_squared + 3*feature_dim
         mlp_input = torch.cat(
             [
                 dist_squared,  # [n, 1]
-                diff_first_to_second,  # [n, shift_dim]
-                diff_first_to_noe,  # [n, shift_dim]
-                diff_second_to_noe,  # [n, shift_dim]
                 first_features,  # [n, feature_dim]
                 second_features,  # [n, feature_dim]
                 noe_features,  # [n, feature_dim]
@@ -596,52 +527,15 @@ class ResidueUpdate(nn.Module):
         # Apply MLP to get deltas
         mlp_output = self.mlp(mlp_input)
 
-        # Parse output:
-        # 2 coord weights + 6 scalar shift weights + 3*feature_dim feature deltas
-        coord_weight_first = 0 * mlp_output[:, 0:1]  # [n, 1] - still zeroed out
-        coord_weight_second = 0 * mlp_output[:, 1:2]  # [n, 1] - still zeroed out
+        # Parse output: 3*feature_dim feature deltas
+        # No coordinate or shift deltas - only update .x features
+        delta_first_features = mlp_output[:, 0*self.feature_dim:1*self.feature_dim]  # [n, feature_dim]
+        delta_second_features = mlp_output[:, 1*self.feature_dim:2*self.feature_dim]  # [n, feature_dim]
+        delta_noe_features = mlp_output[:, 2*self.feature_dim:3*self.feature_dim]  # [n, feature_dim]
 
-        # Shift weights: 6 scalars
-        w1 = mlp_output[:, 2:3]  # [n, 1] - weight for first -> second
-        w2 = mlp_output[:, 3:4]  # [n, 1] - weight for second -> first
-        w3 = mlp_output[:, 4:5]  # [n, 1] - weight for first -> noe
-        w4 = mlp_output[:, 5:6]  # [n, 1] - weight for second -> noe
-        w5 = mlp_output[:, 6:7]  # [n, 1] - weight for noe -> first
-        w6 = mlp_output[:, 7:8]  # [n, 1] - weight for noe -> second
-
-        # Feature deltas: 3 vectors of feature_dim each
-        feature_deltas = mlp_output[:, 8:]  # [n, 3*feature_dim]
-
-        # Compute equivariant coordinate deltas: rel_dist * learned_weights
-        delta_first_coords = rel_dist * coord_weight_first  # [n, 3]
-        delta_second_coords = -rel_dist * coord_weight_second  # [n, 3]
-
-        # Compute shift deltas using scalar weights × difference vectors
-        # The scalar weights [n, 1] broadcast with difference vectors [n, shift_dim]
-        #
-        # Position 1 shifts - receives contributions from w1 and w3
-        delta_first_shifts = w1 * diff_first_to_second + w3 * diff_first_to_noe  # [n, shift_dim]
-
-        # Position 2 shifts - receives contributions from w2 and w4
-        # Note: diff_first_to_second = second - first, so -diff_first_to_second = first - second
-        delta_second_shifts = -w2 * diff_first_to_second + w4 * diff_second_to_noe  # [n, shift_dim]
-
-        # NOE shifts - receives contributions from w5 and w6
-        delta_noe_shifts = -w5 * diff_first_to_noe + -w6 * diff_second_to_noe  # [n, shift_dim]
-
-        # Compute feature deltas (3 vectors of feature_dim each)
-        delta_first_features = feature_deltas[:, 0*self.feature_dim:1*self.feature_dim]  # [n, feature_dim]
-        delta_second_features = feature_deltas[:, 1*self.feature_dim:2*self.feature_dim]  # [n, feature_dim]
-        delta_noe_features = feature_deltas[:, 2*self.feature_dim:3*self.feature_dim]  # [n, feature_dim]
-
-        # Set delta attributes on triple nodes
-        data[self.triple_type].delta_first_coords = delta_first_coords
-        data[self.triple_type].delta_first_shifts = delta_first_shifts
+        # Set delta attributes on triple nodes (features only)
         data[self.triple_type].delta_first_features = delta_first_features
-        data[self.triple_type].delta_second_coords = delta_second_coords
-        data[self.triple_type].delta_second_shifts = delta_second_shifts
         data[self.triple_type].delta_second_features = delta_second_features
-        data[self.triple_type].delta_noe_shifts = delta_noe_shifts
         data[self.triple_type].delta_noe_features = delta_noe_features
 
         return data
@@ -652,15 +546,9 @@ class PeakUpdate(nn.Module):
     Compute deltas for Peak-based triples using MLP.
 
     MLP Architecture:
-        Input: variable (3*shift_dim + 3*feature_dim, NO dist_squared)
+        Input: variable (3*feature_dim)
         Hidden: configurable layers with ReLU activations
-        Output: variable (6*shift_dim + 3*feature_dim, NO coord weights)
-
-    Coordinate Handling:
-        Peaks have no coordinates, so all coordinate deltas are zero.
-
-    Equivariance:
-        Calculations are based on differences between shifts
+        Output: variable (3*feature_dim)
     """
 
     def __init__(self, triple_type: str, device, config):
@@ -682,13 +570,11 @@ class PeakUpdate(nn.Module):
         num_layers = config.mlp.num_layers
 
         # Calculate input/output sizes from config
-        shift_dim = config.shift_embed.output_dim
-        feature_dim = config.feature_embed.output_dim
-        input_size = peak_update_input_size(shift_dim, feature_dim)
-        output_size = peak_update_output_size(shift_dim, feature_dim)
+        feature_dim = config.embed.embed_dim
+        input_size = peak_update_input_size(feature_dim)
+        output_size = peak_update_output_size(feature_dim)
 
         # Store dimensions for later use
-        self.shift_dim = shift_dim
         self.feature_dim = feature_dim
 
         # Build MLP
@@ -716,9 +602,6 @@ class PeakUpdate(nn.Module):
         Compute deltas for triple nodes.
 
         After embeddings, dimensions are:
-        - first_shifts: [n, shift_dim]
-        - second_shifts: [n, shift_dim]
-        - noe_shifts: [n, shift_dim]
         - first_features: [n, feature_dim]
         - second_features: [n, feature_dim]
         - noe_features: [n, feature_dim]
@@ -730,34 +613,24 @@ class PeakUpdate(nn.Module):
             Updated HeteroData with delta attributes set
         """
         # Get gathered attributes (peaks have NO coordinates)
-        first_shifts = data[self.triple_type].first_shifts  # [n, shift_dim]
         first_features = data[self.triple_type].first_features  # [n, feature_dim]
-        second_shifts = data[self.triple_type].second_shifts  # [n, shift_dim]
         second_features = data[self.triple_type].second_features  # [n, feature_dim]
-        noe_shifts = data[self.triple_type].noe_shifts  # [n, shift_dim]
         noe_features = data[self.triple_type].noe_features  # [n, feature_dim]
 
-        num_triples = first_shifts.size(0)
+        num_triples = first_features.size(0)
 
         # Handle empty triple sets using helper function
         if num_triples == 0:
-            deltas = _create_empty_deltas(self.device, num_triples=0, shift_dim=self.shift_dim, feature_dim=self.feature_dim)
+            deltas = _create_empty_deltas(self.device, num_triples=0, feature_dim=self.feature_dim)
             for key, value in deltas.items():
                 setattr(data[self.triple_type], key, value)
             return data
 
-        # Compute shift differences BEFORE MLP input (for translation equivariance)
-        diff_first_to_second = second_shifts - first_shifts  # [n, shift_dim]
-        diff_first_to_noe = noe_shifts - first_shifts  # [n, shift_dim]
-        diff_second_to_noe = noe_shifts - second_shifts  # [n, shift_dim]
-
         # Concatenate all features for MLP input (NO distance calculations for peaks)
-        # Input: 3*shift_dim (differences) + 3*feature_dim
+        # Input: 3*shift_dim (ABSOLUTE shifts) + 3*feature_dim
+        # NO SHIFT DIFFERENCES - network learns from absolute shift values
         mlp_input = torch.cat(
             [
-                diff_first_to_second,  # [n, shift_dim]
-                diff_first_to_noe,  # [n, shift_dim]
-                diff_second_to_noe,  # [n, shift_dim]
                 first_features,  # [n, feature_dim]
                 second_features,  # [n, feature_dim]
                 noe_features,  # [n, feature_dim]
@@ -768,48 +641,15 @@ class PeakUpdate(nn.Module):
         # Apply MLP to get outputs
         mlp_output = self.mlp(mlp_input)
 
-        # Parse output:
-        # 6 scalar shift weights + 3*feature_dim feature deltas (NO coord weights)
-        w1 = mlp_output[:, 0:1]  # [n, 1] - weight for first -> second
-        w2 = mlp_output[:, 1:2]  # [n, 1] - weight for second -> first
-        w3 = mlp_output[:, 2:3]  # [n, 1] - weight for first -> noe
-        w4 = mlp_output[:, 3:4]  # [n, 1] - weight for second -> noe
-        w5 = mlp_output[:, 4:5]  # [n, 1] - weight for noe -> first
-        w6 = mlp_output[:, 5:6]  # [n, 1] - weight for noe -> second
+        # Parse output: 3*feature_dim feature deltas
+        # No shift updates - only update .x features
+        delta_first_features = mlp_output[:, 0*self.feature_dim:1*self.feature_dim]  # [n, feature_dim]
+        delta_second_features = mlp_output[:, 1*self.feature_dim:2*self.feature_dim]  # [n, feature_dim]
+        delta_noe_features = mlp_output[:, 2*self.feature_dim:3*self.feature_dim]  # [n, feature_dim]
 
-        # Feature deltas: 3 vectors of feature_dim each
-        feature_deltas = mlp_output[:, 6:]  # [n, 3*feature_dim]
-
-        # Create ZERO coordinate deltas (peaks have no coordinates)
-        delta_first_coords = torch.zeros((num_triples, 3), dtype=torch.float32, device=self.device)
-        delta_second_coords = torch.zeros((num_triples, 3), dtype=torch.float32, device=self.device)
-
-        # Compute shift deltas using scalar weights × difference vectors
-        # The scalar weights [n, 1] broadcast with difference vectors [n, shift_dim]
-        #
-        # Position 1 shifts - receives contributions from w1 and w3
-        delta_first_shifts = w1 * diff_first_to_second + w3 * diff_first_to_noe  # [n, shift_dim]
-
-        # Position 2 shifts - receives contributions from w2 and w4
-        # Note: diff_first_to_second = second - first, so -diff_first_to_second = first - second
-        delta_second_shifts = -w2 * diff_first_to_second + w4 * diff_second_to_noe  # [n, shift_dim]
-
-        # NOE shifts - receives contributions from w5 and w6
-        delta_noe_shifts = -w5 * diff_first_to_noe + -w6 * diff_second_to_noe  # [n, shift_dim]
-
-        # Compute feature deltas (3 vectors of feature_dim each)
-        delta_first_features = feature_deltas[:, 0*self.feature_dim:1*self.feature_dim]  # [n, feature_dim]
-        delta_second_features = feature_deltas[:, 1*self.feature_dim:2*self.feature_dim]  # [n, feature_dim]
-        delta_noe_features = feature_deltas[:, 2*self.feature_dim:3*self.feature_dim]  # [n, feature_dim]
-
-        # Set delta attributes on triple nodes
-        data[self.triple_type].delta_first_coords = delta_first_coords
-        data[self.triple_type].delta_first_shifts = delta_first_shifts
+        # Set delta attributes on triple nodes (features only)
         data[self.triple_type].delta_first_features = delta_first_features
-        data[self.triple_type].delta_second_coords = delta_second_coords
-        data[self.triple_type].delta_second_shifts = delta_second_shifts
         data[self.triple_type].delta_second_features = delta_second_features
-        data[self.triple_type].delta_noe_shifts = delta_noe_shifts
         data[self.triple_type].delta_noe_features = delta_noe_features
 
         return data
@@ -828,13 +668,9 @@ class FirstResidueScatter(MessagePassing):
 
     Uses edge type: ("Residue", "prop_first", triple_type) with reversed flow
     Reads delta attributes from triple nodes:
-        - delta_first_coords: [n, 3] coordinate deltas
-        - delta_first_shifts: [n, shift_dim] shift deltas
         - delta_first_features: [n, feature_dim] feature deltas
     Updates Residue nodes:
-        - Residue.x[:, 0:3] with coordinate deltas
-        - Residue.x[:, 3:] with shift deltas
-        - Residue.f with feature deltas
+        - Residue.x with feature deltas (only updates feature portion)
     """
 
     def __init__(self, triple_type: str):
@@ -843,6 +679,7 @@ class FirstResidueScatter(MessagePassing):
 
         Args:
             triple_type: Name of source triple node type
+            config: ModelConfig with dimension settings
         """
         super().__init__(aggr="mean", flow="target_to_source")
         self.triple_type = triple_type
@@ -856,11 +693,9 @@ class FirstResidueScatter(MessagePassing):
             data: HeteroData with delta attributes on triple nodes
 
         Returns:
-            Updated HeteroData with Residue.x and Residue.f modified
+            Updated HeteroData with Residue.x modified (features only)
         """
-        # Get delta attributes from triple nodes
-        delta_coords = data[self.triple_type].delta_first_coords  # [n, 3]
-        delta_shifts = data[self.triple_type].delta_first_shifts  # [n, shift_dim]
+        # Get delta attributes from triple nodes (features only)
         delta_features = data[self.triple_type].delta_first_features  # [n, feature_dim]
 
         # Get edge indices for this scatter operation
@@ -869,30 +704,11 @@ class FirstResidueScatter(MessagePassing):
         # Determine number of target nodes (Residue nodes - targets when using reversed flow)
         num_residues = data["Residue"].x.size(0)
 
-        # Propagate coordinate deltas (with reversed flow, size is (target, source))
-        coord_updates = self.propagate(
-            edge_index, x=delta_coords, size=(num_residues, delta_coords.size(0))
-        )
-
-        # Propagate shift deltas
-        shift_updates = self.propagate(
-            edge_index, x=delta_shifts, size=(num_residues, delta_shifts.size(0))
-        )
-
-        # Propagate feature deltas
+        # Propagate feature deltas (with reversed flow, size is (target, source))
         feature_updates = self.propagate(
             edge_index, x=delta_features, size=(num_residues, delta_features.size(0))
         )
-
-        # Assemble complete new tensors (avoid in-place updates for gradient preservation)
-        # Update Residue.x by concatenating updated coords and shifts
-        old_x = data["Residue"].x
-        new_coords = old_x[:, 0:3] + coord_updates
-        new_shifts = old_x[:, 3:] + shift_updates
-        data["Residue"].x = torch.cat([new_coords, new_shifts], dim=-1)
-
-        # Update Residue.f
-        data["Residue"].f = data["Residue"].f + feature_updates
+        data["Residue"].x = data["Residue"].x + feature_updates
 
         return data
 
@@ -907,12 +723,9 @@ class FirstPeakScatter(MessagePassing):
 
     Uses edge type: ("Peak", "prop_first", triple_type) with reversed flow
     Reads delta attributes from triple nodes:
-        - delta_first_shifts: [n, shift_dim] shift deltas
         - delta_first_features: [n, feature_dim] feature deltas
     Updates Peak nodes:
-        - Peak.x with shift deltas
-        - Peak.f with feature deltas
-    Note: Peaks have NO coordinates
+        - Peak.x with feature deltas (only updates feature portion)
     """
 
     def __init__(self, triple_type: str):
@@ -921,6 +734,7 @@ class FirstPeakScatter(MessagePassing):
 
         Args:
             triple_type: Name of source triple node type
+            config: ModelConfig with dimension settings
         """
         super().__init__(aggr="mean", flow="target_to_source")
         self.triple_type = triple_type
@@ -934,10 +748,9 @@ class FirstPeakScatter(MessagePassing):
             data: HeteroData with delta attributes on triple nodes
 
         Returns:
-            Updated HeteroData with Peak.x and Peak.f modified
+            Updated HeteroData with Peak.x modified (features only)
         """
-        # Get delta attributes from triple nodes (no coords for peaks)
-        delta_shifts = data[self.triple_type].delta_first_shifts  # [n, shift_dim]
+        # Get delta attributes from triple nodes (features only)
         delta_features = data[self.triple_type].delta_first_features  # [n, feature_dim]
 
         # Get edge indices for this scatter operation
@@ -946,19 +759,11 @@ class FirstPeakScatter(MessagePassing):
         # Determine number of target nodes (Peak nodes - targets when using reversed flow)
         num_peaks = data["Peak"].x.size(0)
 
-        # Propagate shift deltas (with reversed flow, size is (target, source))
-        shift_updates = self.propagate(
-            edge_index, x=delta_shifts, size=(num_peaks, delta_shifts.size(0))
-        )
-
-        # Propagate feature deltas
+        # Propagate feature deltas (with reversed flow, size is (target, source))
         feature_updates = self.propagate(
             edge_index, x=delta_features, size=(num_peaks, delta_features.size(0))
         )
-
-        # Update Peak.x and Peak.f (assemble new tensors)
-        data["Peak"].x = data["Peak"].x + shift_updates
-        data["Peak"].f = data["Peak"].f + feature_updates
+        data["Peak"].x = data["Peak"].x + feature_updates
 
         return data
 
@@ -973,13 +778,9 @@ class SecondResidueScatter(MessagePassing):
 
     Uses edge type: ("Residue", "prop_second", triple_type) with reversed flow
     Reads delta attributes from triple nodes:
-        - delta_second_coords: [n, 3] coordinate deltas
-        - delta_second_shifts: [n, shift_dim] shift deltas
         - delta_second_features: [n, feature_dim] feature deltas
     Updates Residue nodes:
-        - Residue.x[:, 0:3] with coordinate deltas
-        - Residue.x[:, 3:] with shift deltas
-        - Residue.f with feature deltas
+        - Residue.x with feature deltas (only updates feature portion)
     """
 
     def __init__(self, triple_type: str):
@@ -988,6 +789,7 @@ class SecondResidueScatter(MessagePassing):
 
         Args:
             triple_type: Name of source triple node type
+            config: ModelConfig with dimension settings
         """
         super().__init__(aggr="mean", flow="target_to_source")
         self.triple_type = triple_type
@@ -1001,11 +803,9 @@ class SecondResidueScatter(MessagePassing):
             data: HeteroData with delta attributes on triple nodes
 
         Returns:
-            Updated HeteroData with Residue.x and Residue.f modified
+            Updated HeteroData with Residue.x modified (features only)
         """
-        # Get delta attributes from triple nodes
-        delta_coords = data[self.triple_type].delta_second_coords  # [n, 3]
-        delta_shifts = data[self.triple_type].delta_second_shifts  # [n, shift_dim]
+        # Get delta attributes from triple nodes (features only)
         delta_features = data[self.triple_type].delta_second_features  # [n, feature_dim]
 
         # Get edge indices for this scatter operation
@@ -1014,30 +814,11 @@ class SecondResidueScatter(MessagePassing):
         # Determine number of target nodes (Residue nodes - targets when using reversed flow)
         num_residues = data["Residue"].x.size(0)
 
-        # Propagate coordinate deltas (with reversed flow, size is (target, source))
-        coord_updates = self.propagate(
-            edge_index, x=delta_coords, size=(num_residues, delta_coords.size(0))
-        )
-
-        # Propagate shift deltas
-        shift_updates = self.propagate(
-            edge_index, x=delta_shifts, size=(num_residues, delta_shifts.size(0))
-        )
-
-        # Propagate feature deltas
+        # Propagate feature deltas (with reversed flow, size is (target, source))
         feature_updates = self.propagate(
             edge_index, x=delta_features, size=(num_residues, delta_features.size(0))
         )
-
-        # Assemble complete new tensors (avoid in-place updates for gradient preservation)
-        # Update Residue.x by concatenating updated coords and shifts
-        old_x = data["Residue"].x
-        new_coords = old_x[:, 0:3] + coord_updates
-        new_shifts = old_x[:, 3:] + shift_updates
-        data["Residue"].x = torch.cat([new_coords, new_shifts], dim=-1)
-
-        # Update Residue.f
-        data["Residue"].f = data["Residue"].f + feature_updates
+        data["Residue"].x = data["Residue"].x + feature_updates
 
         return data
 
@@ -1052,12 +833,9 @@ class SecondPeakScatter(MessagePassing):
 
     Uses edge type: ("Peak", "prop_second", triple_type) with reversed flow
     Reads delta attributes from triple nodes:
-        - delta_second_shifts: [n, shift_dim] shift deltas
         - delta_second_features: [n, feature_dim] feature deltas
     Updates Peak nodes:
-        - Peak.x with shift deltas
-        - Peak.f with feature deltas
-    Note: Peaks have NO coordinates
+        - Peak.x with feature deltas (only updates feature portion)
     """
 
     def __init__(self, triple_type: str):
@@ -1066,6 +844,7 @@ class SecondPeakScatter(MessagePassing):
 
         Args:
             triple_type: Name of source triple node type
+            config: ModelConfig with dimension settings
         """
         super().__init__(aggr="mean", flow="target_to_source")
         self.triple_type = triple_type
@@ -1079,10 +858,9 @@ class SecondPeakScatter(MessagePassing):
             data: HeteroData with delta attributes on triple nodes
 
         Returns:
-            Updated HeteroData with Peak.x and Peak.f modified
+            Updated HeteroData with Peak.x modified (features only)
         """
-        # Get delta attributes from triple nodes (no coords for peaks)
-        delta_shifts = data[self.triple_type].delta_second_shifts  # [n, shift_dim]
+        # Get delta attributes from triple nodes (features only)
         delta_features = data[self.triple_type].delta_second_features  # [n, feature_dim]
 
         # Get edge indices for this scatter operation
@@ -1091,19 +869,11 @@ class SecondPeakScatter(MessagePassing):
         # Determine number of target nodes (Peak nodes - targets when using reversed flow)
         num_peaks = data["Peak"].x.size(0)
 
-        # Propagate shift deltas (with reversed flow, size is (target, source))
-        shift_updates = self.propagate(
-            edge_index, x=delta_shifts, size=(num_peaks, delta_shifts.size(0))
-        )
-
-        # Propagate feature deltas
+        # Propagate feature deltas (with reversed flow, size is (target, source))
         feature_updates = self.propagate(
             edge_index, x=delta_features, size=(num_peaks, delta_features.size(0))
         )
-
-        # Update Peak.x and Peak.f (assemble new tensors)
-        data["Peak"].x = data["Peak"].x + shift_updates
-        data["Peak"].f = data["Peak"].f + feature_updates
+        data["Peak"].x = data["Peak"].x + feature_updates
 
         return data
 
@@ -1118,11 +888,9 @@ class NoeScatter(MessagePassing):
 
     Uses edge type: ("Noe", "prop_noe", triple_type) with reversed flow
     Reads delta attributes from triple nodes:
-        - delta_noe_shifts: [n, shift_dim] NOE shift deltas
         - delta_noe_features: [n, feature_dim] feature deltas
     Updates Noe nodes:
-        - Noe.x with shift deltas
-        - Noe.f with feature deltas
+        - Noe.x with feature deltas (entire .x is updated since NOEs have no flags)
     """
 
     def __init__(self, triple_type: str):
@@ -1131,6 +899,7 @@ class NoeScatter(MessagePassing):
 
         Args:
             triple_type: Name of source triple node type
+            config: ModelConfig with dimension settings
         """
         super().__init__(aggr="mean", flow="target_to_source")
         self.triple_type = triple_type
@@ -1144,10 +913,9 @@ class NoeScatter(MessagePassing):
             data: HeteroData with delta attributes on triple nodes
 
         Returns:
-            Updated HeteroData with Noe.x and Noe.f modified
+            Updated HeteroData with Noe.x modified
         """
-        # Get delta attributes from triple nodes
-        delta_shifts = data[self.triple_type].delta_noe_shifts  # [n, shift_dim]
+        # Get delta attributes from triple nodes (features only)
         delta_features = data[self.triple_type].delta_noe_features  # [n, feature_dim]
 
         # Get edge indices for this scatter operation
@@ -1156,19 +924,11 @@ class NoeScatter(MessagePassing):
         # Determine number of target nodes (Noe nodes - targets when using reversed flow)
         num_noes = data["Noe"].x.size(0)
 
-        # Propagate shift deltas (with reversed flow, size is (target, source))
-        shift_updates = self.propagate(
-            edge_index, x=delta_shifts, size=(num_noes, delta_shifts.size(0))
-        )
-
-        # Propagate feature deltas
+        # Propagate feature deltas (with reversed flow, size is (target, source))
         feature_updates = self.propagate(
             edge_index, x=delta_features, size=(num_noes, delta_features.size(0))
         )
-
-        # Update Noe.x and Noe.f (assemble new tensors)
-        data["Noe"].x = data["Noe"].x + shift_updates
-        data["Noe"].f = data["Noe"].f + feature_updates
+        data["Noe"].x = data["Noe"].x + feature_updates
 
         return data
 
@@ -1188,14 +948,14 @@ class ResidueResidueNoeTriple(nn.Module):
     """
     Wire together components for ResidueResidueNoeTriple.
 
-    This triple type handles (Residue, Residue, Noe) relationships and is the
-    only triple type that updates coordinates (equivariant).
+    This triple type handles (Residue, Residue, Noe) relationships.
+    Updates only .x features (no coordinate or shift updates).
 
     Components:
         - FirstResidueGather: Extract from first residue
         - SecondResidueGather: Extract from second residue
         - NoeGather: Extract from NOE constraint
-        - ResidueUpdate: Compute coordinate and shift deltas
+        - ResidueUpdate: Compute feature deltas
         - FirstResidueScatter: Propagate to first residue
         - SecondResidueScatter: Propagate to second residue
         - NoeScatter: Propagate to NOE constraint
@@ -1216,7 +976,7 @@ class ResidueResidueNoeTriple(nn.Module):
         super().__init__()
         triple_type = "ResidueResidueNoeTriple"
 
-        # Instantiate gather operations
+        # Instantiate gather operations (pass config for dimensions)
         self.first_gather = FirstResidueGather(triple_type)
         self.second_gather = SecondResidueGather(triple_type)
         self.noe_gather = NoeGather(triple_type)
@@ -1224,7 +984,7 @@ class ResidueResidueNoeTriple(nn.Module):
         # Instantiate update operation
         self.update = ResidueUpdate(triple_type, device, config)
 
-        # Instantiate scatter operations
+        # Instantiate scatter operations (pass config for dimensions)
         self.first_scatter = FirstResidueScatter(triple_type)
         self.second_scatter = SecondResidueScatter(triple_type)
         self.noe_scatter = NoeScatter(triple_type)
@@ -1253,14 +1013,14 @@ class ResiduePeakNoeTriple(nn.Module):
     """
     Wire together components for ResiduePeakNoeTriple.
 
-    This triple type handles (Residue, Peak, Noe) relationships. Updates shifts
-    only, NO coordinate updates.
+    This triple type handles (Residue, Peak, Noe) relationships. Updates
+    features only, NO coordinate or shift updates.
 
     Components:
         - FirstResidueGather: Extract from first residue
         - SecondPeakGather: Extract from second peak
         - NoeGather: Extract from NOE constraint
-        - PeakUpdate: Compute shift deltas only
+        - PeakUpdate: Compute feature deltas only
         - FirstResidueScatter: Propagate to first residue
         - SecondPeakScatter: Propagate to second peak
         - NoeScatter: Propagate to NOE constraint
@@ -1281,7 +1041,7 @@ class ResiduePeakNoeTriple(nn.Module):
         super().__init__()
         triple_type = "ResiduePeakNoeTriple"
 
-        # Instantiate gather operations
+        # Instantiate gather operations (pass config for dimensions)
         self.first_gather = FirstResidueGather(triple_type)
         self.second_gather = SecondPeakGather(triple_type)
         self.noe_gather = NoeGather(triple_type)
@@ -1289,7 +1049,7 @@ class ResiduePeakNoeTriple(nn.Module):
         # Instantiate update operation
         self.update = PeakUpdate(triple_type, device, config)
 
-        # Instantiate scatter operations
+        # Instantiate scatter operations (pass config for dimensions)
         self.first_scatter = FirstResidueScatter(triple_type)
         self.second_scatter = SecondPeakScatter(triple_type)
         self.noe_scatter = NoeScatter(triple_type)
@@ -1318,14 +1078,14 @@ class PeakResidueNoeTriple(nn.Module):
     """
     Wire together components for PeakResidueNoeTriple.
 
-    This triple type handles (Peak, Residue, Noe) relationships. Updates shifts
-    only, NO coordinate updates.
+    This triple type handles (Peak, Residue, Noe) relationships. Updates
+    features only, NO coordinate or shift updates.
 
     Components:
         - FirstPeakGather: Extract from first peak
         - SecondResidueGather: Extract from second residue
         - NoeGather: Extract from NOE constraint
-        - PeakUpdate: Compute shift deltas only
+        - PeakUpdate: Compute feature deltas only
         - FirstPeakScatter: Propagate to first peak
         - SecondResidueScatter: Propagate to second residue
         - NoeScatter: Propagate to NOE constraint
@@ -1346,7 +1106,7 @@ class PeakResidueNoeTriple(nn.Module):
         super().__init__()
         triple_type = "PeakResidueNoeTriple"
 
-        # Instantiate gather operations
+        # Instantiate gather operations (pass config for dimensions)
         self.first_gather = FirstPeakGather(triple_type)
         self.second_gather = SecondResidueGather(triple_type)
         self.noe_gather = NoeGather(triple_type)
@@ -1354,7 +1114,7 @@ class PeakResidueNoeTriple(nn.Module):
         # Instantiate update operation
         self.update = PeakUpdate(triple_type, device, config)
 
-        # Instantiate scatter operations
+        # Instantiate scatter operations (pass config for dimensions)
         self.first_scatter = FirstPeakScatter(triple_type)
         self.second_scatter = SecondResidueScatter(triple_type)
         self.noe_scatter = NoeScatter(triple_type)
@@ -1383,14 +1143,14 @@ class PeakPeakNoeTriple(nn.Module):
     """
     Wire together components for PeakPeakNoeTriple.
 
-    This triple type handles (Peak, Peak, Noe) relationships. Updates shifts
-    only, NO coordinate updates.
+    This triple type handles (Peak, Peak, Noe) relationships. Updates
+    features only, NO coordinate or shift updates.
 
     Components:
         - FirstPeakGather: Extract from first peak
         - SecondPeakGather: Extract from second peak
         - NoeGather: Extract from NOE constraint
-        - PeakUpdate: Compute shift deltas only
+        - PeakUpdate: Compute feature deltas only
         - FirstPeakScatter: Propagate to first peak
         - SecondPeakScatter: Propagate to second peak
         - NoeScatter: Propagate to NOE constraint
@@ -1411,7 +1171,7 @@ class PeakPeakNoeTriple(nn.Module):
         super().__init__()
         triple_type = "PeakPeakNoeTriple"
 
-        # Instantiate gather operations
+        # Instantiate gather operations (pass config for dimensions)
         self.first_gather = FirstPeakGather(triple_type)
         self.second_gather = SecondPeakGather(triple_type)
         self.noe_gather = NoeGather(triple_type)
@@ -1419,7 +1179,7 @@ class PeakPeakNoeTriple(nn.Module):
         # Instantiate update operation
         self.update = PeakUpdate(triple_type, device, config)
 
-        # Instantiate scatter operations
+        # Instantiate scatter operations (pass config for dimensions)
         self.first_scatter = FirstPeakScatter(triple_type)
         self.second_scatter = SecondPeakScatter(triple_type)
         self.noe_scatter = NoeScatter(triple_type)
@@ -1450,56 +1210,15 @@ class PeakPeakNoeTriple(nn.Module):
 # Calculation utilities used by update operations
 
 
-def calc_noe_difference(x1, x2, noe):
-    """
-    Calculate shift differences between NOE and residue/peak shifts.
-
-    Args:
-        x1: First node shifts [n, 2] (H, N)
-        x2: Second node shifts [n, 2] (H, N)
-        noe: NOE shifts [n, 3] (N, H', H")
-
-    Returns:
-        Tuple of (diff_N, diff_H1, diff_H2) each [n, 1]
-    """
-    NOE_N1 = slice(0, 1)
-    NOE_H1 = slice(1, 2)
-    NOE_H2 = slice(2, 3)
-    SHIFT_H = slice(0, 1)  # H is at index 0
-    SHIFT_N = slice(1, 2)  # N is at index 1
-
-    diff_N = noe[:, NOE_N1] - x1[:, SHIFT_N]  # N [n, 1]
-    diff_H1 = noe[:, NOE_H1] - x1[:, SHIFT_H]  # H' [n, 1]
-    diff_H2 = noe[:, NOE_H2] - x2[:, SHIFT_H]  # H" [n, 1]
-    return diff_N, diff_H1, diff_H2
-
-
-def calc_shift_difference(x1, x2):
-    """
-    Calculate shift differences between two nodes.
-
-    Args:
-        x1: First node shifts [n, 2] (H, N)
-        x2: Second node shifts [n, 2] (H, N)
-
-    Returns:
-        Tuple of (diff_N, diff_H) each [n, 1]
-    """
-    SHIFT_H = slice(0, 1)  # H is at index 0
-    SHIFT_N = slice(1, 2)  # N is at index 1
-
-    diff_N = x1[:, SHIFT_N] - x2[:, SHIFT_N]  # N [n, 1]
-    diff_H = x1[:, SHIFT_H] - x2[:, SHIFT_H]  # H [n, 1]
-    return diff_N, diff_H
-
-
 def calc_res_distance(x1, x2):
     """
     Calculate relative distance and squared distance between residues.
 
+    Uses IMMUTABLE .xyz coordinates (not .x attributes).
+
     Args:
-        x1: First residue coordinates [n, 3]
-        x2: Second residue coordinates [n, 3]
+        x1: First residue coordinates [n, 3] (from .xyz)
+        x2: Second residue coordinates [n, 3] (from .xyz)
 
     Returns:
         Tuple of (rel_dist, dist_squared)
@@ -1508,4 +1227,4 @@ def calc_res_distance(x1, x2):
     """
     rel_dist = x1 - x2  # [n, 3]
     dist_squared = torch.norm(rel_dist, dim=-1, keepdim=True) ** 2  # [n, 1]
-    return rel_dist, dist_squared
+    return dist_squared

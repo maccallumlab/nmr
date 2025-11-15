@@ -14,6 +14,11 @@ class BatchMessagePass(MessagePassing):
     """
     Message passing for aggregating node features to batch-level representations.
     Used by value and policy heads to collect information across the graph.
+
+    All node types now have the same .x dimension (embed_dim):
+    - NOE.x: [embed_dim]
+    - Peak.x: [embed_dim]
+    - Residue.x: [embed_dim]
     """
 
     def __init__(self, aggr, device, config):
@@ -21,14 +26,9 @@ class BatchMessagePass(MessagePassing):
         self.device = device
         self.config = config
 
-        # After embeddings:
-        # - NOE: shift_dim (embedded from 3D)
-        # - Peak: shift_dim (embedded from 2D)
-        # - Residue: 3 (coords) + shift_dim
-        # Note: NOE and Peak both have shift_dim, so they share the same reduction layer
-        shift_dim = config.shift_embed.output_dim
-        self.shift_reduce = nn.Linear(shift_dim, 1, device=self.device)
-        self.res_reduce = nn.Linear(3 + shift_dim, 1, device=self.device)
+        # All nodes have the same dimension after embedding
+        embed_dim = config.embed.embed_dim
+        self.reduce = nn.Linear(embed_dim, 1, device=self.device)
 
     def forward(self, x_source, x_target, edge_index):
         # SIZE (n, m) (source, target)
@@ -39,18 +39,8 @@ class BatchMessagePass(MessagePassing):
         )
 
     def message(self, x_j):
-        dim = x_j.size(1)
-        shift_dim = self.config.shift_embed.output_dim
-
-        # Check dimension to determine node type
-        if dim == shift_dim:
-            # NOE and Peak both have shift_dim after embedding, use same reduction
-            return self.shift_reduce(x_j)
-        elif dim == 3 + shift_dim:
-            # Residue nodes: 3 coords + shift_dim
-            return self.res_reduce(x_j)
-        else:
-            raise ValueError(f"Unexpected feature dimension: {dim}")
+        # All node types use the same reduction
+        return self.reduce(x_j)
 
     def update(self, aggr_out, x):
         return aggr_out
@@ -121,26 +111,31 @@ class PolicyCalc(nn.Module):
     Policy prediction head.
 
     Computes action probabilities (which residue to assign to the current shift)
-    based on pairwise distances between residue and shift features.
+    based on pairwise dot products between residue and peak embedded features.
+
+    All node types now have the same .x dimension (embed_dim):
+    - Peak.x: [embed_dim]
+    - Residue.x: [embed_dim]
+
+    Policy is computed by comparing the entire embedded feature vectors using dot products.
     """
 
-    def __init__(self, device, config):
+    def __init__(self, device):
         super().__init__()
         self.device = device
-        self.config = config
-        # After embeddings, residue shifts start at index 3 and go to the end
-        # No need for fixed slice since we'll use [:, 3:] dynamically
 
     def calc_policy(self, data):
         """
         Calculate policy logits for each graph in the batch.
 
-        For each graph, computes the full pairwise distance matrix between all peaks
-        and all residues. Returns logits (not probabilities).
+        For each graph, computes the full pairwise dot product matrix between all peaks
+        and all residues using their embedded features.
+
+        Returns logits (not probabilities).
 
         The returned logits have shape [num_peaks, num_residues] where:
         - logits[peak_i, residue_j] = logit for assigning peak i to residue j
-        - Higher logit = closer in chemical shift space (negative squared distance)
+        - Higher logit = more aligned in embedded feature space (dot product)
 
         For training:
         - Use logits[shift_to_assign, :] with action as target for current assignment
@@ -150,7 +145,7 @@ class PolicyCalc(nn.Module):
             data: HeteroData (single or batched) with Residue nodes and Peak nodes
 
         Returns:
-            List of logit tensors (negative squared distances), one per graph in batch
+            List of logit tensors (dot products), one per graph in batch
             Shape per graph: [num_peaks, num_residues]
         """
         # Check if data is batched or single
@@ -167,21 +162,19 @@ class PolicyCalc(nn.Module):
         # Compute the policy logits for each item
         policies = []
         for item in data_unbatched:
-            # Get all peak shift embeddings: shape [num_peaks, shift_dim]
-            peak_features = item["Peak"].x
+            # Get peak embedded features
+            # Peak.x = [embed_dim]
+            peak_features = item["Peak"].x  # [num_peaks, embed_dim]
 
-            # Get all residue shift embeddings: shape [num_residues, shift_dim]
-            residue_features = item["Residue"].x[:, 3:]  # Extract shift dimensions starting at index 3
+            # Get residue embedded features
+            # Residue.x = [embed_dim]
+            residue_features = item["Residue"].x  # [num_residues, embed_dim]
 
-            # Compute pairwise squared distances using broadcasting
-            # peak_features.unsqueeze(1): [num_peaks, 1, shift_dim]
-            # residue_features.unsqueeze(0): [1, num_residues, shift_dim]
-            # diff: [num_peaks, num_residues, shift_dim]
-            diff = peak_features.unsqueeze(1) - residue_features.unsqueeze(0)
-            squared_distances = torch.sum(diff ** 2, dim=-1)  # [num_peaks, num_residues]
-
-            # Use negative squared distances as logits (closer = higher logit)
-            logits = -squared_distances
+            # Compute pairwise dot products using matrix multiplication
+            # peak_features: [num_peaks, embed_dim]
+            # residue_features.T: [embed_dim, num_residues]
+            # logits: [num_peaks, num_residues]
+            logits = torch.matmul(peak_features, residue_features.T)
 
             policies.append(logits)
 

@@ -25,7 +25,7 @@ from torch_geometric.loader import DataLoader
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from nmr.construct import construct_graph
-from nmr.models.network import NMRNet, NMRLayer, ModelConfig, StandardizeShifts, EmbedFeatures
+from nmr.models.network import NMRNet, NMRLayer, ModelConfig, EmbedFeatures
 from nmr.nmr_gym.fake_data import FakeDataGenerator
 from nmr.nmr_gym.gym_env import GymEnv
 
@@ -61,6 +61,7 @@ class TestCompleteIntegration(unittest.TestCase):
     def setUp(self):
         """Set up test environment and small test data."""
         self.device = torch.device("cpu")
+        self.config = ModelConfig()
         self.num_resid = 5
 
         # Generate a small test dataset
@@ -84,7 +85,7 @@ class TestCompleteIntegration(unittest.TestCase):
     def test_end_to_end_forward_pass(self):
         """Test complete forward pass through entire network."""
         # Construct graph
-        data = construct_graph(self.state, self.device)
+        data = construct_graph(self.state, self.device, self.config)
 
         # Verify graph structure has new naming
         self.assertIn("Residue", data.node_types)
@@ -116,7 +117,7 @@ class TestCompleteIntegration(unittest.TestCase):
     def test_graph_construction_with_new_naming(self):
         """Test that graph construction creates valid graphs with new naming."""
         # Construct graph
-        data = construct_graph(self.state, self.device)
+        data = construct_graph(self.state, self.device, self.config)
 
         # Verify node types use new naming
         node_types = data.node_types
@@ -155,13 +156,12 @@ class TestCompleteIntegration(unittest.TestCase):
     def test_all_four_triple_types_process_correctly(self):
         """Test that all 4 triple types process correctly in sequence."""
         # Construct graph
-        data = construct_graph(self.state, self.device)
+        data = construct_graph(self.state, self.device, self.config)
 
         # Embed features before calling NMRLayer
+        # Coordinates are already normalized during graph construction
         config = ModelConfig()
-        standardize = StandardizeShifts()
         embed = EmbedFeatures(self.device, config)
-        data = standardize(data)
         data = embed(data)
 
         # Store original node features
@@ -193,7 +193,7 @@ class TestCompleteIntegration(unittest.TestCase):
     def test_gradient_flow_through_pipeline(self):
         """Test gradient flow through gather → update → scatter pipeline."""
         # Construct graph
-        data = construct_graph(self.state, self.device)
+        data = construct_graph(self.state, self.device, self.config)
 
         # Create network
         net = NMRNet(self.device, ModelConfig())
@@ -237,13 +237,12 @@ class TestCompleteIntegration(unittest.TestCase):
     def test_equivariance_of_residue_residue_noe_triple(self):
         """Test equivariance of ResidueResidueNoeTriple coordinate updates."""
         # Construct graph
-        data1 = construct_graph(self.state, self.device)
+        data1 = construct_graph(self.state, self.device, self.config)
 
         # Embed features before calling NMRLayer
+        # Coordinates are already normalized during graph construction
         config = ModelConfig()
-        standardize = StandardizeShifts()
         embed = EmbedFeatures(self.device, config)
-        data1 = standardize(data1)
         data1 = embed(data1)
 
         # Store original coordinates
@@ -281,10 +280,10 @@ class TestCompleteIntegration(unittest.TestCase):
         state2["coordinates"] = full_transformed_coords.tolist()
 
         # Construct graph with transformed coordinates
-        data2 = construct_graph(state2, self.device)
+        data2 = construct_graph(state2, self.device, self.config)
 
         # Embed features for data2
-        data2 = standardize(data2)
+        # Coordinates are already normalized during graph construction
         data2 = embed(data2)
 
         # Run forward pass again
@@ -317,13 +316,12 @@ class TestCompleteIntegration(unittest.TestCase):
     def test_peak_based_triples_produce_zero_coordinate_deltas(self):
         """Test that Peak-based triples produce zero coordinate deltas."""
         # Construct graph
-        data = construct_graph(self.state, self.device)
+        data = construct_graph(self.state, self.device, self.config)
 
         # Embed features
+        # Coordinates are already normalized during graph construction
         config = ModelConfig()
-        standardize = StandardizeShifts()
         embed = EmbedFeatures(self.device, config)
-        data = standardize(data)
         data = embed(data)
 
         # Store original Residue coordinates
@@ -337,8 +335,8 @@ class TestCompleteIntegration(unittest.TestCase):
         # Manually call each triple and check coordinate changes
 
         # First, run only ResidueResidueNoeTriple
-        data1 = construct_graph(self.state, self.device)
-        data1 = standardize(data1)
+        # Coordinates are already normalized during graph construction
+        data1 = construct_graph(self.state, self.device, self.config)
         data1 = embed(data1)
         data1 = layer.residue_residue_noe(data1)
         coords_after_res_res = data1["Residue"].x[:, 0:3]
@@ -352,8 +350,7 @@ class TestCompleteIntegration(unittest.TestCase):
             ("PeakResidueNoeTriple", layer.peak_residue_noe),
             ("PeakPeakNoeTriple", layer.peak_peak_noe)
         ]:
-            data_peak = construct_graph(self.state, self.device)
-            data_peak = standardize(data_peak)
+            data_peak = construct_graph(self.state, self.device, self.config)
             data_peak = embed(data_peak)
             coords_before = data_peak["Residue"].x[:, 0:3].clone()
 
@@ -388,7 +385,7 @@ class TestCompleteIntegration(unittest.TestCase):
             state = create_state_dict_from_env(env_state)
 
             # Construct graph
-            data = construct_graph(state, self.device)
+            data = construct_graph(state, self.device, self.config)
             graphs.append(data)
 
         # Create data loader for batching
@@ -435,7 +432,7 @@ class TestCompleteIntegration(unittest.TestCase):
         state_small = create_state_dict_from_env(env_state_small)
 
         # Construct graph
-        data_small = construct_graph(state_small, self.device)
+        data_small = construct_graph(state_small, self.device, self.config)
 
         # Create network and run forward pass
         net = NMRNet(self.device, ModelConfig())
@@ -471,6 +468,7 @@ class TestCoordinateUpdateComparison(unittest.TestCase):
     def setUp(self):
         """Set up test environment."""
         self.device = torch.device("cpu")
+        self.config = ModelConfig()
         self.num_resid = 5
 
         # Generate test dataset
@@ -491,12 +489,11 @@ class TestCoordinateUpdateComparison(unittest.TestCase):
         """Verify only ResidueResidueNoeTriple updates coordinates."""
         config = ModelConfig()
         layer = NMRLayer(self.device, config)
-        standardize = StandardizeShifts()
         embed = EmbedFeatures(self.device, config)
 
         # Test ResidueResidueNoeTriple
-        data_res_res = construct_graph(self.state, self.device)
-        data_res_res = standardize(data_res_res)
+        # Coordinates are already normalized during graph construction
+        data_res_res = construct_graph(self.state, self.device, self.config)
         data_res_res = embed(data_res_res)
         original_coords = data_res_res["Residue"].x[:, 0:3].clone()
 
@@ -507,8 +504,7 @@ class TestCoordinateUpdateComparison(unittest.TestCase):
         # (implementation-dependent if updates are actually non-zero)
 
         # Test ResiduePeakNoeTriple
-        data_res_peak = construct_graph(self.state, self.device)
-        data_res_peak = standardize(data_res_peak)
+        data_res_peak = construct_graph(self.state, self.device, self.config)
         data_res_peak = embed(data_res_peak)
         coords_before = data_res_peak["Residue"].x[:, 0:3].clone()
         data_res_peak = layer.residue_peak_noe(data_res_peak)
@@ -519,8 +515,7 @@ class TestCoordinateUpdateComparison(unittest.TestCase):
                        "ResiduePeakNoeTriple should not update coordinates")
 
         # Test PeakResidueNoeTriple
-        data_peak_res = construct_graph(self.state, self.device)
-        data_peak_res = standardize(data_peak_res)
+        data_peak_res = construct_graph(self.state, self.device, self.config)
         data_peak_res = embed(data_peak_res)
         coords_before = data_peak_res["Residue"].x[:, 0:3].clone()
         data_peak_res = layer.peak_residue_noe(data_peak_res)
@@ -531,8 +526,7 @@ class TestCoordinateUpdateComparison(unittest.TestCase):
                        "PeakResidueNoeTriple should not update coordinates")
 
         # Test PeakPeakNoeTriple
-        data_peak_peak = construct_graph(self.state, self.device)
-        data_peak_peak = standardize(data_peak_peak)
+        data_peak_peak = construct_graph(self.state, self.device, self.config)
         data_peak_peak = embed(data_peak_peak)
         coords_before = data_peak_peak["Residue"].x[:, 0:3].clone()
         data_peak_peak = layer.peak_peak_noe(data_peak_peak)

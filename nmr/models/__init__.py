@@ -10,8 +10,7 @@ from .network import (
     NMRLayer,
     NMRNet,
     ModelConfig,
-    FeatureEmbedConfig,
-    ShiftEmbedConfig,
+    EmbedConfig,
     MLPConfig,
 )
 
@@ -38,8 +37,6 @@ from .triple import (
     PeakResidueNoeTriple,
     PeakPeakNoeTriple,
     # Helper functions
-    calc_noe_difference,
-    calc_shift_difference,
     calc_res_distance,
 )
 
@@ -52,8 +49,7 @@ __all__ = [
     "NMRNet",
     # Configuration
     "ModelConfig",
-    "FeatureEmbedConfig",
-    "ShiftEmbedConfig",
+    "EmbedConfig",
     "MLPConfig",
     # Gather components
     "FirstResidueGather",
@@ -76,8 +72,6 @@ __all__ = [
     "PeakResidueNoeTriple",
     "PeakPeakNoeTriple",
     # Helper functions
-    "calc_noe_difference",
-    "calc_shift_difference",
     "calc_res_distance",
     # Heads
     "BatchMessagePass",
