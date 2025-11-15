@@ -5,14 +5,15 @@ This module implements a three-stage message passing pipeline using explicit,
 modular components instead of conditional logic:
 
 Architecture:
-1. Gather Operations (5 classes): Extract features from source nodes to triple nodes
+1. Gather Operations (2 classes): Extract features from source nodes to triple nodes
+   - GatherToTriple: Generic parameterized gather (handles Residue/Peak, first/second)
+   - NoeGather: Specialized NOE constraint gather
 2. Update Operations (2 classes): Compute deltas via MLPs on triple nodes
-3. Scatter Operations (5 classes): Propagate deltas back to source nodes
+3. Scatter Operations (2 classes): Propagate deltas back to source nodes
+   - ScatterFromTriple: Generic parameterized scatter (handles Residue/Peak, first/second)
+   - NoeScatter: Specialized NOE constraint scatter
 4. Triple Composition (4 classes): Wire gather/update/scatter for each triple type
 5. Layer Orchestration (in network.py): Call all 4 triple types explicitly
-
-This architecture eliminates runtime conditionals by making all behavioral choices
-explicit at construction time.
 
 Triple Types:
 - ResidueResidueNoeTriple: (Residue, Residue, Noe)
@@ -26,7 +27,7 @@ Node Type Naming:
 - Peak: Observed chemical shifts .shifts [H,N] and features .x
 - Noe: NOE constraints .shifts [N, H', H"] and features .x
 
-NEW ATTRIBUTE STRUCTURE (after refactoring):
+Attribute Structure
 - Raw data attributes (IMMUTABLE, set once during construction):
   * .xyz: coordinates (Residue only)
   * .shifts: shift values (all node types)
@@ -112,43 +113,49 @@ def peak_update_output_size(feature_dim):
 # PyTorch Geometric MessagePassing with aggr="mean"
 
 
-class FirstResidueGather(MessagePassing):
+class GatherToTriple(MessagePassing):
     """
-    Extract coordinates and features from residues in first position.
+    Generic gather operation that extracts features from source nodes to triple nodes.
 
-    Uses edge type: ("Residue", "prop_first", triple_type)
+    Supports both Residue and Peak node types in first or second position.
+    When has_coords=True (Residue nodes), propagates both coordinates and features.
+    When has_coords=False (Peak nodes), propagates features only.
+
+    Uses edge type: (node_type, f"prop_{position}", triple_type)
     Sets attributes on triple nodes:
-        - first_coords: [n, 3] coordinates (from .xyz)
-        - first_features: [n, feature_dim] assignment features (from .x)
+        - {position}_coords: [n, 3] coordinates (only if has_coords=True)
+        - {position}_features: [n, feature_dim] embedded features
     """
 
-    def __init__(self, triple_type: str):
+    def __init__(self, node_type: str, triple_type: str, position: str, has_coords: bool):
         """
-        Initialize FirstResidueGather.
+        Initialize GatherToTriple.
 
         Args:
-            triple_type: Name of target triple node type
-            config: ModelConfig with dimension settings
+            node_type: Source node type ("Residue" or "Peak")
+            triple_type: Target triple node type
+            position: Position in triple ("first" or "second")
+            has_coords: Whether to propagate coordinates (True for Residue, False for Peak)
         """
         super().__init__(aggr="mean")
+        self.node_type = node_type
         self.triple_type = triple_type
-        self.edge_type = ("Residue", "prop_first", triple_type)
+        self.position = position
+        self.has_coords = has_coords
+        self.edge_type = (node_type, f"prop_{position}", triple_type)
 
     def forward(self, data):
         """
-        Extract features from Residue nodes to triple nodes.
+        Extract features from source nodes to triple nodes.
 
         Args:
-            data: HeteroData graph with Residue nodes and gather edges
+            data: HeteroData graph with source nodes and gather edges
 
         Returns:
-            Updated HeteroData with first_coords, first_shifts, first_features set
+            Updated HeteroData with {position}_coords (if has_coords) and {position}_features set
         """
-        # Extract coordinates [n, 3] from IMMUTABLE .xyz attribute
-        coords = data["Residue"].xyz
-
-        # Extract unified embedded features [n, embed_dim] from .x
-        features = data["Residue"].x  # [n, embed_dim]
+        # Extract embedded features from .x
+        features = data[self.node_type].x  # [n, embed_dim]
 
         # Get edge indices for this gather operation
         edge_index = data[self.edge_type].edge_index
@@ -156,180 +163,20 @@ class FirstResidueGather(MessagePassing):
         # Determine number of target nodes (triple nodes)
         num_triples = data[self.triple_type].x.size(0)
 
-        # Propagate coordinates with explicit size
-        data[self.triple_type].first_coords = self.propagate(
-            edge_index, x=coords, size=(coords.size(0), num_triples)
-        )
+        # Propagate coordinates if this node type has them (Residue only)
+        if self.has_coords:
+            coords = data[self.node_type].xyz  # [n, 3]
+            setattr(
+                data[self.triple_type],
+                f"{self.position}_coords",
+                self.propagate(edge_index, x=coords, size=(coords.size(0), num_triples))
+            )
 
-        # Propagate features
-        data[self.triple_type].first_features = self.propagate(
-            edge_index, x=features, size=(features.size(0), num_triples)
-        )
-
-        return data
-
-    def message(self, x_j):
-        """Pass through features from source nodes."""
-        return x_j
-
-
-class FirstPeakGather(MessagePassing):
-    """
-    Extract shifts and features from peaks in first position.
-
-    Uses edge type: ("Peak", "prop_first", triple_type)
-    Sets attributes on triple nodes:
-        - first_features: [n, feature_dim] assignment features (from .x)
-    """
-
-    def __init__(self, triple_type: str):
-        """
-        Initialize FirstPeakGather.
-
-        Args:
-            triple_type: Name of target triple node type
-            config: ModelConfig with dimension settings
-        """
-        super().__init__(aggr="mean")
-        self.triple_type = triple_type
-        self.edge_type = ("Peak", "prop_first", triple_type)
-
-    def forward(self, data):
-        """
-        Extract features from Peak nodes to triple nodes.
-
-        Args:
-            data: HeteroData graph with Peak nodes and gather edges
-
-        Returns:
-            Updated HeteroData with first_features set
-        """
-        # Extract unified embedded features [n, embed_dim] from .x
-        features = data["Peak"].x  # [n, embed_dim]
-
-        # Get edge indices for this gather operation
-        edge_index = data[self.edge_type].edge_index
-
-        # Determine number of target nodes (triple nodes)
-        num_triples = data[self.triple_type].x.size(0)
-
-        # Propagate features
-        data[self.triple_type].first_features = self.propagate(
-            edge_index, x=features, size=(features.size(0), num_triples)
-        )
-
-        return data
-
-    def message(self, x_j):
-        """Pass through features from source nodes."""
-        return x_j
-
-
-class SecondResidueGather(MessagePassing):
-    """
-    Extract coordinates and features from residues in second position.
-
-    Uses edge type: ("Residue", "prop_second", triple_type)
-    Sets attributes on triple nodes:
-        - second_coords: [n, 3] coordinates (from .xyz)
-        - second_features: [n, feature_dim] assignment features (from .x)
-    """
-
-    def __init__(self, triple_type: str):
-        """
-        Initialize SecondResidueGather.
-
-        Args:
-            triple_type: Name of target triple node type
-            config: ModelConfig with dimension settings
-        """
-        super().__init__(aggr="mean")
-        self.triple_type = triple_type
-        self.edge_type = ("Residue", "prop_second", triple_type)
-
-    def forward(self, data):
-        """
-        Extract features from Residue nodes to triple nodes.
-
-        Args:
-            data: HeteroData graph with Residue nodes and gather edges
-
-        Returns:
-            Updated HeteroData with second_coords and second_features set
-        """
-        # Extract coordinates [n, 3] from IMMUTABLE .xyz attribute
-        coords = data["Residue"].xyz
-
-        # Extract unified embedded features [n, embed_dim] from .x
-        # NOTE: With unified architecture, we use the full .x for both shifts and features
-        features = data["Residue"].x  # [n, embed_dim]
-
-        # Get edge indices for this gather operation
-        edge_index = data[self.edge_type].edge_index
-
-        # Determine number of target nodes (triple nodes)
-        num_triples = data[self.triple_type].x.size(0)
-
-        # Propagate coordinates with explicit size
-        data[self.triple_type].second_coords = self.propagate(
-            edge_index, x=coords, size=(coords.size(0), num_triples)
-        )
-
-        # Propagate features
-        data[self.triple_type].second_features = self.propagate(
-            edge_index, x=features, size=(features.size(0), num_triples)
-        )
-
-        return data
-
-    def message(self, x_j):
-        """Pass through features from source nodes."""
-        return x_j
-
-
-class SecondPeakGather(MessagePassing):
-    """
-    Extract features from peaks in second position.
-
-    Uses edge type: ("Peak", "prop_second", triple_type)
-    Sets attributes on triple nodes:
-        - second_features: [n, feature_dim] assignment features (from .x)
-    """
-
-    def __init__(self, triple_type: str):
-        """
-        Initialize SecondPeakGather.
-
-        Args:
-            triple_type: Name of target triple node type
-            config: ModelConfig with dimension settings
-        """
-        super().__init__(aggr="mean")
-        self.triple_type = triple_type
-        self.edge_type = ("Peak", "prop_second", triple_type)
-
-    def forward(self, data):
-        """
-        Extract features from Peak nodes to triple nodes.
-
-        Args:
-            data: HeteroData graph with Peak nodes and gather edges
-
-        Returns:
-            Updated HeteroData with second_features set
-        """
-        # Extract unified embedded features [n, embed_dim] from .x
-        features = data["Peak"].x  # [n, embed_dim]
-
-        # Get edge indices for this gather operation
-        edge_index = data[self.edge_type].edge_index
-
-        # Determine number of target nodes (triple nodes)
-        num_triples = data[self.triple_type].x.size(0)
-
-        # Propagate features
-        data[self.triple_type].second_features = self.propagate(
-            edge_index, x=features, size=(features.size(0), num_triples)
+        # Propagate features (all node types)
+        setattr(
+            data[self.triple_type],
+            f"{self.position}_features",
+            self.propagate(edge_index, x=features, size=(features.size(0), num_triples))
         )
 
         return data
@@ -662,218 +509,59 @@ class PeakUpdate(nn.Module):
 # PyTorch Geometric MessagePassing with aggr="mean"
 
 
-class FirstResidueScatter(MessagePassing):
+class ScatterFromTriple(MessagePassing):
     """
-    Propagate deltas from triple nodes to residues in first position.
+    Generic scatter operation that propagates deltas from triple nodes back to source nodes.
 
-    Uses edge type: ("Residue", "prop_first", triple_type) with reversed flow
+    Supports both Residue and Peak node types in first or second position.
+    All scatter operations are identical - they only differ in edge type and target node type.
+
+    Uses edge type: (node_type, f"prop_{position}", triple_type) with reversed flow
     Reads delta attributes from triple nodes:
-        - delta_first_features: [n, feature_dim] feature deltas
-    Updates Residue nodes:
-        - Residue.x with feature deltas (only updates feature portion)
+        - delta_{position}_features: [n, feature_dim] feature deltas
+    Updates target nodes:
+        - {node_type}.x with feature deltas
     """
 
-    def __init__(self, triple_type: str):
+    def __init__(self, node_type: str, triple_type: str, position: str):
         """
-        Initialize FirstResidueScatter.
+        Initialize ScatterFromTriple.
 
         Args:
-            triple_type: Name of source triple node type
-            config: ModelConfig with dimension settings
+            node_type: Target node type ("Residue" or "Peak")
+            triple_type: Source triple node type
+            position: Position in triple ("first" or "second")
         """
         super().__init__(aggr="mean", flow="target_to_source")
+        self.node_type = node_type
         self.triple_type = triple_type
-        self.edge_type = ("Residue", "prop_first", triple_type)
+        self.position = position
+        self.edge_type = (node_type, f"prop_{position}", triple_type)
 
     def forward(self, data):
         """
-        Propagate deltas from triple nodes to Residue nodes.
+        Propagate deltas from triple nodes to target nodes.
 
         Args:
             data: HeteroData with delta attributes on triple nodes
 
         Returns:
-            Updated HeteroData with Residue.x modified (features only)
+            Updated HeteroData with {node_type}.x modified
         """
-        # Get delta attributes from triple nodes (features only)
-        delta_features = data[self.triple_type].delta_first_features  # [n, feature_dim]
+        # Get delta attributes from triple nodes
+        delta_features = getattr(data[self.triple_type], f"delta_{self.position}_features")
 
         # Get edge indices for this scatter operation
         edge_index = data[self.edge_type].edge_index
 
-        # Determine number of target nodes (Residue nodes - targets when using reversed flow)
-        num_residues = data["Residue"].x.size(0)
+        # Determine number of target nodes (targets when using reversed flow)
+        num_targets = data[self.node_type].x.size(0)
 
         # Propagate feature deltas (with reversed flow, size is (target, source))
         feature_updates = self.propagate(
-            edge_index, x=delta_features, size=(num_residues, delta_features.size(0))
+            edge_index, x=delta_features, size=(num_targets, delta_features.size(0))
         )
-        data["Residue"].x = data["Residue"].x + feature_updates
-
-        return data
-
-    def message(self, x_j):
-        """Pass through deltas from triple nodes."""
-        return x_j
-
-
-class FirstPeakScatter(MessagePassing):
-    """
-    Propagate deltas from triple nodes to peaks in first position.
-
-    Uses edge type: ("Peak", "prop_first", triple_type) with reversed flow
-    Reads delta attributes from triple nodes:
-        - delta_first_features: [n, feature_dim] feature deltas
-    Updates Peak nodes:
-        - Peak.x with feature deltas (only updates feature portion)
-    """
-
-    def __init__(self, triple_type: str):
-        """
-        Initialize FirstPeakScatter.
-
-        Args:
-            triple_type: Name of source triple node type
-            config: ModelConfig with dimension settings
-        """
-        super().__init__(aggr="mean", flow="target_to_source")
-        self.triple_type = triple_type
-        self.edge_type = ("Peak", "prop_first", triple_type)
-
-    def forward(self, data):
-        """
-        Propagate deltas from triple nodes to Peak nodes.
-
-        Args:
-            data: HeteroData with delta attributes on triple nodes
-
-        Returns:
-            Updated HeteroData with Peak.x modified (features only)
-        """
-        # Get delta attributes from triple nodes (features only)
-        delta_features = data[self.triple_type].delta_first_features  # [n, feature_dim]
-
-        # Get edge indices for this scatter operation
-        edge_index = data[self.edge_type].edge_index
-
-        # Determine number of target nodes (Peak nodes - targets when using reversed flow)
-        num_peaks = data["Peak"].x.size(0)
-
-        # Propagate feature deltas (with reversed flow, size is (target, source))
-        feature_updates = self.propagate(
-            edge_index, x=delta_features, size=(num_peaks, delta_features.size(0))
-        )
-        data["Peak"].x = data["Peak"].x + feature_updates
-
-        return data
-
-    def message(self, x_j):
-        """Pass through deltas from triple nodes."""
-        return x_j
-
-
-class SecondResidueScatter(MessagePassing):
-    """
-    Propagate deltas from triple nodes to residues in second position.
-
-    Uses edge type: ("Residue", "prop_second", triple_type) with reversed flow
-    Reads delta attributes from triple nodes:
-        - delta_second_features: [n, feature_dim] feature deltas
-    Updates Residue nodes:
-        - Residue.x with feature deltas (only updates feature portion)
-    """
-
-    def __init__(self, triple_type: str):
-        """
-        Initialize SecondResidueScatter.
-
-        Args:
-            triple_type: Name of source triple node type
-            config: ModelConfig with dimension settings
-        """
-        super().__init__(aggr="mean", flow="target_to_source")
-        self.triple_type = triple_type
-        self.edge_type = ("Residue", "prop_second", triple_type)
-
-    def forward(self, data):
-        """
-        Propagate deltas from triple nodes to Residue nodes.
-
-        Args:
-            data: HeteroData with delta attributes on triple nodes
-
-        Returns:
-            Updated HeteroData with Residue.x modified (features only)
-        """
-        # Get delta attributes from triple nodes (features only)
-        delta_features = data[self.triple_type].delta_second_features  # [n, feature_dim]
-
-        # Get edge indices for this scatter operation
-        edge_index = data[self.edge_type].edge_index
-
-        # Determine number of target nodes (Residue nodes - targets when using reversed flow)
-        num_residues = data["Residue"].x.size(0)
-
-        # Propagate feature deltas (with reversed flow, size is (target, source))
-        feature_updates = self.propagate(
-            edge_index, x=delta_features, size=(num_residues, delta_features.size(0))
-        )
-        data["Residue"].x = data["Residue"].x + feature_updates
-
-        return data
-
-    def message(self, x_j):
-        """Pass through deltas from triple nodes."""
-        return x_j
-
-
-class SecondPeakScatter(MessagePassing):
-    """
-    Propagate deltas from triple nodes to peaks in second position.
-
-    Uses edge type: ("Peak", "prop_second", triple_type) with reversed flow
-    Reads delta attributes from triple nodes:
-        - delta_second_features: [n, feature_dim] feature deltas
-    Updates Peak nodes:
-        - Peak.x with feature deltas (only updates feature portion)
-    """
-
-    def __init__(self, triple_type: str):
-        """
-        Initialize SecondPeakScatter.
-
-        Args:
-            triple_type: Name of source triple node type
-            config: ModelConfig with dimension settings
-        """
-        super().__init__(aggr="mean", flow="target_to_source")
-        self.triple_type = triple_type
-        self.edge_type = ("Peak", "prop_second", triple_type)
-
-    def forward(self, data):
-        """
-        Propagate deltas from triple nodes to Peak nodes.
-
-        Args:
-            data: HeteroData with delta attributes on triple nodes
-
-        Returns:
-            Updated HeteroData with Peak.x modified (features only)
-        """
-        # Get delta attributes from triple nodes (features only)
-        delta_features = data[self.triple_type].delta_second_features  # [n, feature_dim]
-
-        # Get edge indices for this scatter operation
-        edge_index = data[self.edge_type].edge_index
-
-        # Determine number of target nodes (Peak nodes - targets when using reversed flow)
-        num_peaks = data["Peak"].x.size(0)
-
-        # Propagate feature deltas (with reversed flow, size is (target, source))
-        feature_updates = self.propagate(
-            edge_index, x=delta_features, size=(num_peaks, delta_features.size(0))
-        )
-        data["Peak"].x = data["Peak"].x + feature_updates
+        data[self.node_type].x = data[self.node_type].x + feature_updates
 
         return data
 
@@ -952,12 +640,12 @@ class ResidueResidueNoeTriple(nn.Module):
     Updates only .x features (no coordinate or shift updates).
 
     Components:
-        - FirstResidueGather: Extract from first residue
-        - SecondResidueGather: Extract from second residue
+        - GatherToTriple (first, Residue, has_coords=True): Extract from first residue
+        - GatherToTriple (second, Residue, has_coords=True): Extract from second residue
         - NoeGather: Extract from NOE constraint
         - ResidueUpdate: Compute feature deltas
-        - FirstResidueScatter: Propagate to first residue
-        - SecondResidueScatter: Propagate to second residue
+        - ScatterFromTriple (first, Residue): Propagate to first residue
+        - ScatterFromTriple (second, Residue): Propagate to second residue
         - NoeScatter: Propagate to NOE constraint
 
     Forward pass sequence:
@@ -976,17 +664,17 @@ class ResidueResidueNoeTriple(nn.Module):
         super().__init__()
         triple_type = "ResidueResidueNoeTriple"
 
-        # Instantiate gather operations (pass config for dimensions)
-        self.first_gather = FirstResidueGather(triple_type)
-        self.second_gather = SecondResidueGather(triple_type)
+        # Instantiate gather operations
+        self.first_gather = GatherToTriple("Residue", triple_type, "first", has_coords=True)
+        self.second_gather = GatherToTriple("Residue", triple_type, "second", has_coords=True)
         self.noe_gather = NoeGather(triple_type)
 
         # Instantiate update operation
         self.update = ResidueUpdate(triple_type, device, config)
 
-        # Instantiate scatter operations (pass config for dimensions)
-        self.first_scatter = FirstResidueScatter(triple_type)
-        self.second_scatter = SecondResidueScatter(triple_type)
+        # Instantiate scatter operations
+        self.first_scatter = ScatterFromTriple("Residue", triple_type, "first")
+        self.second_scatter = ScatterFromTriple("Residue", triple_type, "second")
         self.noe_scatter = NoeScatter(triple_type)
 
     def forward(self, data):
@@ -1017,12 +705,12 @@ class ResiduePeakNoeTriple(nn.Module):
     features only, NO coordinate or shift updates.
 
     Components:
-        - FirstResidueGather: Extract from first residue
-        - SecondPeakGather: Extract from second peak
+        - GatherToTriple (first, Residue, has_coords=True): Extract from first residue
+        - GatherToTriple (second, Peak, has_coords=False): Extract from second peak
         - NoeGather: Extract from NOE constraint
         - PeakUpdate: Compute feature deltas only
-        - FirstResidueScatter: Propagate to first residue
-        - SecondPeakScatter: Propagate to second peak
+        - ScatterFromTriple (first, Residue): Propagate to first residue
+        - ScatterFromTriple (second, Peak): Propagate to second peak
         - NoeScatter: Propagate to NOE constraint
 
     Forward pass sequence:
@@ -1041,17 +729,17 @@ class ResiduePeakNoeTriple(nn.Module):
         super().__init__()
         triple_type = "ResiduePeakNoeTriple"
 
-        # Instantiate gather operations (pass config for dimensions)
-        self.first_gather = FirstResidueGather(triple_type)
-        self.second_gather = SecondPeakGather(triple_type)
+        # Instantiate gather operations
+        self.first_gather = GatherToTriple("Residue", triple_type, "first", has_coords=True)
+        self.second_gather = GatherToTriple("Peak", triple_type, "second", has_coords=False)
         self.noe_gather = NoeGather(triple_type)
 
         # Instantiate update operation
         self.update = PeakUpdate(triple_type, device, config)
 
-        # Instantiate scatter operations (pass config for dimensions)
-        self.first_scatter = FirstResidueScatter(triple_type)
-        self.second_scatter = SecondPeakScatter(triple_type)
+        # Instantiate scatter operations
+        self.first_scatter = ScatterFromTriple("Residue", triple_type, "first")
+        self.second_scatter = ScatterFromTriple("Peak", triple_type, "second")
         self.noe_scatter = NoeScatter(triple_type)
 
     def forward(self, data):
@@ -1082,12 +770,12 @@ class PeakResidueNoeTriple(nn.Module):
     features only, NO coordinate or shift updates.
 
     Components:
-        - FirstPeakGather: Extract from first peak
-        - SecondResidueGather: Extract from second residue
+        - GatherToTriple (first, Peak, has_coords=False): Extract from first peak
+        - GatherToTriple (second, Residue, has_coords=True): Extract from second residue
         - NoeGather: Extract from NOE constraint
         - PeakUpdate: Compute feature deltas only
-        - FirstPeakScatter: Propagate to first peak
-        - SecondResidueScatter: Propagate to second residue
+        - ScatterFromTriple (first, Peak): Propagate to first peak
+        - ScatterFromTriple (second, Residue): Propagate to second residue
         - NoeScatter: Propagate to NOE constraint
 
     Forward pass sequence:
@@ -1106,17 +794,17 @@ class PeakResidueNoeTriple(nn.Module):
         super().__init__()
         triple_type = "PeakResidueNoeTriple"
 
-        # Instantiate gather operations (pass config for dimensions)
-        self.first_gather = FirstPeakGather(triple_type)
-        self.second_gather = SecondResidueGather(triple_type)
+        # Instantiate gather operations
+        self.first_gather = GatherToTriple("Peak", triple_type, "first", has_coords=False)
+        self.second_gather = GatherToTriple("Residue", triple_type, "second", has_coords=True)
         self.noe_gather = NoeGather(triple_type)
 
         # Instantiate update operation
         self.update = PeakUpdate(triple_type, device, config)
 
-        # Instantiate scatter operations (pass config for dimensions)
-        self.first_scatter = FirstPeakScatter(triple_type)
-        self.second_scatter = SecondResidueScatter(triple_type)
+        # Instantiate scatter operations
+        self.first_scatter = ScatterFromTriple("Peak", triple_type, "first")
+        self.second_scatter = ScatterFromTriple("Residue", triple_type, "second")
         self.noe_scatter = NoeScatter(triple_type)
 
     def forward(self, data):
@@ -1147,12 +835,12 @@ class PeakPeakNoeTriple(nn.Module):
     features only, NO coordinate or shift updates.
 
     Components:
-        - FirstPeakGather: Extract from first peak
-        - SecondPeakGather: Extract from second peak
+        - GatherToTriple (first, Peak, has_coords=False): Extract from first peak
+        - GatherToTriple (second, Peak, has_coords=False): Extract from second peak
         - NoeGather: Extract from NOE constraint
         - PeakUpdate: Compute feature deltas only
-        - FirstPeakScatter: Propagate to first peak
-        - SecondPeakScatter: Propagate to second peak
+        - ScatterFromTriple (first, Peak): Propagate to first peak
+        - ScatterFromTriple (second, Peak): Propagate to second peak
         - NoeScatter: Propagate to NOE constraint
 
     Forward pass sequence:
@@ -1171,17 +859,17 @@ class PeakPeakNoeTriple(nn.Module):
         super().__init__()
         triple_type = "PeakPeakNoeTriple"
 
-        # Instantiate gather operations (pass config for dimensions)
-        self.first_gather = FirstPeakGather(triple_type)
-        self.second_gather = SecondPeakGather(triple_type)
+        # Instantiate gather operations
+        self.first_gather = GatherToTriple("Peak", triple_type, "first", has_coords=False)
+        self.second_gather = GatherToTriple("Peak", triple_type, "second", has_coords=False)
         self.noe_gather = NoeGather(triple_type)
 
         # Instantiate update operation
         self.update = PeakUpdate(triple_type, device, config)
 
-        # Instantiate scatter operations (pass config for dimensions)
-        self.first_scatter = FirstPeakScatter(triple_type)
-        self.second_scatter = SecondPeakScatter(triple_type)
+        # Instantiate scatter operations
+        self.first_scatter = ScatterFromTriple("Peak", triple_type, "first")
+        self.second_scatter = ScatterFromTriple("Peak", triple_type, "second")
         self.noe_scatter = NoeScatter(triple_type)
 
     def forward(self, data):

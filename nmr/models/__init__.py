@@ -14,22 +14,16 @@ from .network import (
     MLPConfig,
 )
 
-# Triple message passing - new modular architecture
+# Triple message passing - modular architecture with parameterized components
 from .triple import (
     # Gather components
-    FirstResidueGather,
-    FirstPeakGather,
-    SecondResidueGather,
-    SecondPeakGather,
+    GatherToTriple,
     NoeGather,
     # Update components
     ResidueUpdate,
     PeakUpdate,
     # Scatter components
-    FirstResidueScatter,
-    FirstPeakScatter,
-    SecondResidueScatter,
-    SecondPeakScatter,
+    ScatterFromTriple,
     NoeScatter,
     # Triple composition
     ResidueResidueNoeTriple,
@@ -52,19 +46,13 @@ __all__ = [
     "EmbedConfig",
     "MLPConfig",
     # Gather components
-    "FirstResidueGather",
-    "FirstPeakGather",
-    "SecondResidueGather",
-    "SecondPeakGather",
+    "GatherToTriple",
     "NoeGather",
     # Update components
     "ResidueUpdate",
     "PeakUpdate",
     # Scatter components
-    "FirstResidueScatter",
-    "FirstPeakScatter",
-    "SecondResidueScatter",
-    "SecondPeakScatter",
+    "ScatterFromTriple",
     "NoeScatter",
     # Triple composition
     "ResidueResidueNoeTriple",
