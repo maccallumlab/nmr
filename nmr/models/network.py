@@ -6,6 +6,7 @@ to create the complete neural network for NMR assignment.
 """
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 import torch
 import torch.nn as nn
@@ -18,6 +19,7 @@ from .triple import (
     ResiduePeakNoeTriple,
     ResidueResidueNoeTriple,
 )
+from .transformer import AttentionConfig
 
 
 @dataclass
@@ -46,8 +48,10 @@ class ModelConfig:
     """Top-level configuration for NMRNet model."""
 
     num_nmr_layers: int = 1
+    layer_type: Literal["triple", "transformer"] = "triple"  # Layer architecture type
     embed: EmbedConfig = field(default_factory=EmbedConfig)
     mlp: MLPConfig = field(default_factory=MLPConfig)
+    attention: AttentionConfig = field(default_factory=AttentionConfig)  # Attention config for transformer
 
 
 class NMRLayer(nn.Module):
