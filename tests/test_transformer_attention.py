@@ -2,7 +2,7 @@
 Unit tests for transformer-based attention mechanisms.
 
 Tests focus on:
-- Basic self-attention computation (GATv2 implementation)
+- Basic self-attention computation (MonoAxial implementation)
 - Multi-head attention support
 - Shape preservation for batched graphs
 - Empty node set handling
@@ -19,17 +19,16 @@ from torch_geometric.data import HeteroData
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from nmr.models.transformer import GATv2Attention, ResidueSelfAttentionTransformer
+from nmr.models.transformer import MonoAxialAttention, ResidueSelfAttentionTransformer
 
 
-class TestGATv2Attention(unittest.TestCase):
-    """Test GATv2-style attention mechanism (self and cross-attention)."""
+class TestMonoAxialAttention(unittest.TestCase):
+    """Test MonoAxial attention mechanism (self and cross-attention)."""
 
     def setUp(self):
         """Set up test fixtures."""
         self.device = torch.device("cpu")
-        self.in_channels = 128
-        self.out_channels = 128  # Output dimension (same as input for residual compatibility)
+        self.channels = 128
         self.head_dim = 64  # Dimension per attention head
         self.heads = 4
 
@@ -38,14 +37,14 @@ class TestGATv2Attention(unittest.TestCase):
         # Create a simple graph with Peak nodes
         data = HeteroData()
         num_peaks = 10
-        data["Peak"].x = torch.randn(num_peaks, self.in_channels, device=self.device)
+        data["Peak"].x = torch.randn(num_peaks, self.channels, device=self.device)
 
         # Create self-attention module for peaks
-        attention = GATv2Attention(
+        attention = MonoAxialAttention(
             source_type="Peak",
             dest_type="Peak",
-            in_channels=self.in_channels,
-            out_channels=self.out_channels,
+            in_channels=self.channels,
+            out_channels=self.channels,
             head_dim=self.head_dim,
             heads=self.heads,
             device=self.device
@@ -61,19 +60,19 @@ class TestGATv2Attention(unittest.TestCase):
         output = attention(data)
 
         # Check output shape: [num_nodes, out_channels]
-        expected_shape = (num_peaks, self.out_channels)
+        expected_shape = (num_peaks, self.channels)
         self.assertEqual(output["Peak"].x.shape, expected_shape)
 
     def test_empty_node_set(self):
         """Test handling of empty node sets."""
         data = HeteroData()
-        data["Peak"].x = torch.zeros(0, self.in_channels, device=self.device)
+        data["Peak"].x = torch.zeros(0, self.channels, device=self.device)
 
-        attention = GATv2Attention(
+        attention = MonoAxialAttention(
             source_type="Peak",
             dest_type="Peak",
-            in_channels=self.in_channels,
-            out_channels=self.out_channels,
+            in_channels=self.channels,
+            out_channels=self.channels,
             head_dim=self.head_dim,
             heads=self.heads,
             device=self.device
@@ -87,7 +86,7 @@ class TestGATv2Attention(unittest.TestCase):
         # Should not crash and return input unchanged
         output = attention(data)
         # When there are no nodes, input should remain unchanged
-        expected_shape = (0, self.in_channels)
+        expected_shape = (0, self.channels)
         self.assertEqual(output["Peak"].x.shape, expected_shape)
 
     def test_gradient_flow(self):
@@ -96,15 +95,15 @@ class TestGATv2Attention(unittest.TestCase):
         num_peaks = 8
         # Create input features as parameters to properly track gradients
         input_features = torch.randn(
-            num_peaks, self.in_channels, device=self.device, requires_grad=True
+            num_peaks, self.channels, device=self.device, requires_grad=True
         )
         data["Peak"].x = input_features
 
-        attention = GATv2Attention(
+        attention = MonoAxialAttention(
             source_type="Peak",
             dest_type="Peak",
-            in_channels=self.in_channels,
-            out_channels=self.out_channels,
+            in_channels=self.channels,
+            out_channels=self.channels,
             head_dim=self.head_dim,
             heads=self.heads,
             device=self.device
@@ -132,13 +131,13 @@ class TestGATv2Attention(unittest.TestCase):
         # Simulate batched graph
         data = HeteroData()
         num_peaks = 20  # 2 graphs with 10 peaks each
-        data["Peak"].x = torch.randn(num_peaks, self.in_channels, device=self.device)
+        data["Peak"].x = torch.randn(num_peaks, self.channels, device=self.device)
 
-        attention = GATv2Attention(
+        attention = MonoAxialAttention(
             source_type="Peak",
             dest_type="Peak",
-            in_channels=self.in_channels,
-            out_channels=self.out_channels,
+            in_channels=self.channels,
+            out_channels=self.channels,
             head_dim=self.head_dim,
             heads=self.heads,
             device=self.device
@@ -158,7 +157,7 @@ class TestGATv2Attention(unittest.TestCase):
         output = attention(data)
 
         # Check shape
-        expected_shape = (num_peaks, self.out_channels)
+        expected_shape = (num_peaks, self.channels)
         self.assertEqual(output["Peak"].x.shape, expected_shape)
 
     def test_cross_attention(self):
@@ -168,15 +167,15 @@ class TestGATv2Attention(unittest.TestCase):
         num_residues = 5
 
         # Create features for both node types
-        data["Peak"].x = torch.randn(num_peaks, self.in_channels, device=self.device)
-        data["Residue"].x = torch.randn(num_residues, self.in_channels, device=self.device)
+        data["Peak"].x = torch.randn(num_peaks, self.channels, device=self.device)
+        data["Residue"].x = torch.randn(num_residues, self.channels, device=self.device)
 
         # Create cross-attention module: Peak -> Residue
-        attention = GATv2Attention(
+        attention = MonoAxialAttention(
             source_type="Peak",
             dest_type="Residue",
-            in_channels=self.in_channels,
-            out_channels=self.out_channels,
+            in_channels=self.channels,
+            out_channels=self.channels,
             head_dim=self.head_dim,
             heads=self.heads,
             edge_name="cross_attn",
@@ -202,7 +201,7 @@ class TestGATv2Attention(unittest.TestCase):
         output = attention(data)
 
         # Check that Residue features were updated
-        expected_shape = (num_residues, self.out_channels)
+        expected_shape = (num_residues, self.channels)
         self.assertEqual(output["Residue"].x.shape, expected_shape)
 
         # Check that Peak features were NOT modified (cross-attention updates dest only)
@@ -212,6 +211,65 @@ class TestGATv2Attention(unittest.TestCase):
         self.assertFalse(torch.isnan(output["Residue"].x).any())
         self.assertFalse(torch.isinf(output["Residue"].x).any())
 
+    def test_channel_projection(self):
+        """Test that channel projection works when in_channels != out_channels."""
+        data = HeteroData()
+        num_peaks = 10
+        in_channels = 64
+        out_channels = 128
+
+        # Create features with in_channels dimension
+        data["Peak"].x = torch.randn(num_peaks, in_channels, device=self.device)
+
+        # Create attention module with different in/out channels
+        attention = MonoAxialAttention(
+            source_type="Peak",
+            dest_type="Peak",
+            in_channels=in_channels,
+            out_channels=out_channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device
+        )
+
+        # Verify projection layer is Linear (not Identity)
+        self.assertIsInstance(attention.projection, torch.nn.Linear)
+        self.assertEqual(attention.projection.in_features, in_channels)
+        self.assertEqual(attention.projection.out_features, out_channels)
+
+        # Create edges
+        edge_index = torch.combinations(
+            torch.arange(num_peaks), r=2, with_replacement=True
+        ).t()
+        data[("Peak", "self_attn", "Peak")].edge_index = edge_index
+
+        # Forward pass
+        output = attention(data)
+
+        # Check output shape matches out_channels
+        expected_shape = (num_peaks, out_channels)
+        self.assertEqual(output["Peak"].x.shape, expected_shape)
+
+        # Verify output is not NaN or Inf
+        self.assertFalse(torch.isnan(output["Peak"].x).any())
+        self.assertFalse(torch.isinf(output["Peak"].x).any())
+
+    def test_identity_projection(self):
+        """Test that Identity is used when in_channels == out_channels."""
+        # Create attention module with same in/out channels
+        attention = MonoAxialAttention(
+            source_type="Peak",
+            dest_type="Peak",
+            in_channels=self.channels,
+            out_channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device
+        )
+
+        # Verify projection layer is Identity (not Linear)
+        self.assertIsInstance(attention.projection, torch.nn.Identity)
+
 
 class TestResidueSelfAttentionTransformer(unittest.TestCase):
     """Test distance-aware self-attention for Residue nodes."""
@@ -219,8 +277,8 @@ class TestResidueSelfAttentionTransformer(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
         self.device = torch.device("cpu")
-        self.in_channels = 128
-        self.out_channels = 128
+        self.channels = 128
+        self.channels = 128
         self.head_dim = 64
         self.heads = 4
 
@@ -228,12 +286,12 @@ class TestResidueSelfAttentionTransformer(unittest.TestCase):
         """Test that attention produces correct output shape."""
         data = HeteroData()
         num_residues = 10
-        data["Residue"].x = torch.randn(num_residues, self.in_channels, device=self.device)
+        data["Residue"].x = torch.randn(num_residues, self.channels, device=self.device)
         data["Residue"].xyz = torch.randn(num_residues, 3, device=self.device)
 
         attention = ResidueSelfAttentionTransformer(
-            in_channels=self.in_channels,
-            out_channels=self.out_channels,
+            in_channels=self.channels,
+            out_channels=self.channels,
             head_dim=self.head_dim,
             heads=self.heads,
             device=self.device
@@ -249,7 +307,7 @@ class TestResidueSelfAttentionTransformer(unittest.TestCase):
         output = attention(data)
 
         # Check output shape
-        expected_shape = (num_residues, self.out_channels)
+        expected_shape = (num_residues, self.channels)
         self.assertEqual(output["Residue"].x.shape, expected_shape)
 
     def test_distance_computation(self):
@@ -258,7 +316,7 @@ class TestResidueSelfAttentionTransformer(unittest.TestCase):
         num_residues = 3
 
         # Create features
-        data["Residue"].x = torch.randn(num_residues, self.in_channels, device=self.device)
+        data["Residue"].x = torch.randn(num_residues, self.channels, device=self.device)
 
         # Create coordinates with known distances
         # Residue 0 at origin, Residue 1 nearby (distance=1), Residue 2 far (distance=10)
@@ -268,8 +326,8 @@ class TestResidueSelfAttentionTransformer(unittest.TestCase):
         )
 
         attention = ResidueSelfAttentionTransformer(
-            in_channels=self.in_channels,
-            out_channels=self.out_channels,
+            in_channels=self.channels,
+            out_channels=self.channels,
             head_dim=self.head_dim,
             heads=self.heads,
             device=self.device
@@ -288,19 +346,19 @@ class TestResidueSelfAttentionTransformer(unittest.TestCase):
 
         # Output should be different based on distance
         # (exact values depend on learned weights, but output should be valid)
-        self.assertEqual(output["Residue"].x.shape, (num_residues, self.out_channels))
+        self.assertEqual(output["Residue"].x.shape, (num_residues, self.channels))
         self.assertFalse(torch.isnan(output["Residue"].x).any())
         self.assertFalse(torch.isinf(output["Residue"].x).any())
 
     def test_empty_node_set(self):
         """Test handling of empty node sets."""
         data = HeteroData()
-        data["Residue"].x = torch.zeros(0, self.in_channels, device=self.device)
+        data["Residue"].x = torch.zeros(0, self.channels, device=self.device)
         data["Residue"].xyz = torch.zeros(0, 3, device=self.device)
 
         attention = ResidueSelfAttentionTransformer(
-            in_channels=self.in_channels,
-            out_channels=self.out_channels,
+            in_channels=self.channels,
+            out_channels=self.channels,
             head_dim=self.head_dim,
             heads=self.heads,
             device=self.device
@@ -313,19 +371,19 @@ class TestResidueSelfAttentionTransformer(unittest.TestCase):
 
         # Should not crash
         output = attention(data)
-        expected_shape = (0, self.in_channels)
+        expected_shape = (0, self.channels)
         self.assertEqual(output["Residue"].x.shape, expected_shape)
 
     def test_no_edges(self):
         """Test handling when there are no edges."""
         data = HeteroData()
         num_residues = 5
-        data["Residue"].x = torch.randn(num_residues, self.in_channels, device=self.device)
+        data["Residue"].x = torch.randn(num_residues, self.channels, device=self.device)
         data["Residue"].xyz = torch.randn(num_residues, 3, device=self.device)
 
         attention = ResidueSelfAttentionTransformer(
-            in_channels=self.in_channels,
-            out_channels=self.out_channels,
+            in_channels=self.channels,
+            out_channels=self.channels,
             head_dim=self.head_dim,
             heads=self.heads,
             device=self.device
@@ -338,7 +396,7 @@ class TestResidueSelfAttentionTransformer(unittest.TestCase):
 
         # Should not crash and return input unchanged
         output = attention(data)
-        self.assertEqual(output["Residue"].x.shape, (num_residues, self.in_channels))
+        self.assertEqual(output["Residue"].x.shape, (num_residues, self.channels))
 
     def test_gradient_flow(self):
         """Test that gradients flow through attention and distance computation."""
@@ -347,7 +405,7 @@ class TestResidueSelfAttentionTransformer(unittest.TestCase):
 
         # Create input features and coordinates with gradient tracking
         input_features = torch.randn(
-            num_residues, self.in_channels, device=self.device, requires_grad=True
+            num_residues, self.channels, device=self.device, requires_grad=True
         )
         input_xyz = torch.randn(num_residues, 3, device=self.device, requires_grad=True)
 
@@ -355,8 +413,8 @@ class TestResidueSelfAttentionTransformer(unittest.TestCase):
         data["Residue"].xyz = input_xyz
 
         attention = ResidueSelfAttentionTransformer(
-            in_channels=self.in_channels,
-            out_channels=self.out_channels,
+            in_channels=self.channels,
+            out_channels=self.channels,
             head_dim=self.head_dim,
             heads=self.heads,
             device=self.device
@@ -385,12 +443,12 @@ class TestResidueSelfAttentionTransformer(unittest.TestCase):
         """Test that attention works with batched graphs."""
         data = HeteroData()
         num_residues = 20  # 2 graphs with 10 residues each
-        data["Residue"].x = torch.randn(num_residues, self.in_channels, device=self.device)
+        data["Residue"].x = torch.randn(num_residues, self.channels, device=self.device)
         data["Residue"].xyz = torch.randn(num_residues, 3, device=self.device)
 
         attention = ResidueSelfAttentionTransformer(
-            in_channels=self.in_channels,
-            out_channels=self.out_channels,
+            in_channels=self.channels,
+            out_channels=self.channels,
             head_dim=self.head_dim,
             heads=self.heads,
             device=self.device
@@ -410,20 +468,20 @@ class TestResidueSelfAttentionTransformer(unittest.TestCase):
         output = attention(data)
 
         # Check shape
-        expected_shape = (num_residues, self.out_channels)
+        expected_shape = (num_residues, self.channels)
         self.assertEqual(output["Residue"].x.shape, expected_shape)
 
     def test_xyz_immutability(self):
         """Test that .xyz coordinates are not modified during forward pass."""
         data = HeteroData()
         num_residues = 5
-        data["Residue"].x = torch.randn(num_residues, self.in_channels, device=self.device)
+        data["Residue"].x = torch.randn(num_residues, self.channels, device=self.device)
         original_xyz = torch.randn(num_residues, 3, device=self.device)
         data["Residue"].xyz = original_xyz.clone()
 
         attention = ResidueSelfAttentionTransformer(
-            in_channels=self.in_channels,
-            out_channels=self.out_channels,
+            in_channels=self.channels,
+            out_channels=self.channels,
             head_dim=self.head_dim,
             heads=self.heads,
             device=self.device
