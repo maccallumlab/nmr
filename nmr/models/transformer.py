@@ -445,19 +445,55 @@ class SpatialAttentionCore(MessagePassing):
 
 class MonoAxialAttention(nn.Module):
     """
-    GATv2-style attention wrapper for HeteroData graphs.
+    GATv2-style attention wrapper for HeteroData graphs with conditional spatial awareness.
 
     This wrapper class handles:
     - Node and edge type navigation in HeteroData
     - Empty node/edge set handling
     - Residual connections with optional projection
+    - Conditional spatial attention based on node types
 
-    Delegates the core attention computation to AttentionCore.
+    Attention Mechanism Selection:
+    - **Residue-to-Residue**: Uses SpatialAttentionCore (distance-aware attention)
+      - Incorporates Euclidean distance between node coordinates (.xyz attribute)
+      - Enables biologically meaningful spatial relationships in protein structures
+    - **All other cases**: Uses AttentionCore (feature-only attention)
+      - Peak-to-Peak, Noe-to-Noe, or any cross-attention with non-Residue types
+      - Standard GATv2 attention without spatial information
 
     Can handle:
-    - Self-attention: source_type == dest_type (e.g., "Peak" -> "Peak")
+    - Self-attention: source_type == dest_type (e.g., "Peak" -> "Peak", "Residue" -> "Residue")
     - Cross-attention: source_type != dest_type (e.g., "Peak" -> "Residue")
     - Channel transformation: in_channels != out_channels with learned projection
+
+    Requirements:
+    - Residue nodes must have .xyz attribute (3D coordinates) when using spatial attention
+    - All nodes must have .x attribute (feature embeddings)
+
+    Example - Residue Self-Attention (Spatial):
+        >>> # Distance-aware attention for residues
+        >>> attn = MonoAxialAttention(
+        ...     source_type="Residue",
+        ...     dest_type="Residue",
+        ...     in_channels=64,
+        ...     out_channels=64,
+        ...     head_dim=16,
+        ...     heads=4
+        ... )
+        >>> # data["Residue"].xyz must exist with shape [num_residues, 3]
+        >>> updated_data = attn(data)
+
+    Example - Peak Self-Attention (Non-Spatial):
+        >>> # Feature-only attention for peaks
+        >>> attn = MonoAxialAttention(
+        ...     source_type="Peak",
+        ...     dest_type="Peak",
+        ...     in_channels=64,
+        ...     out_channels=64,
+        ...     head_dim=16,
+        ...     heads=4
+        ... )
+        >>> updated_data = attn(data)
 
     References:
         "How Attentive are Graph Attention Networks?" (Brody et al., 2021)
@@ -503,14 +539,26 @@ class MonoAxialAttention(nn.Module):
         self.edge_type = (source_type, edge_name, dest_type)
 
         # Core attention computation
-        self.core = AttentionCore(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            head_dim=head_dim,
-            heads=heads,
-            negative_slope=negative_slope,
-            device=device,
-        )
+        # Use SpatialAttentionCore when both source and dest are Residue nodes (with xyz coordinates)
+        # Otherwise use standard AttentionCore (for Peak, Noe, or mixed-type attention)
+        if source_type == "Residue" and dest_type == "Residue":
+            self.core = SpatialAttentionCore(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                head_dim=head_dim,
+                heads=heads,
+                negative_slope=negative_slope,
+                device=device,
+            )
+        else:
+            self.core = AttentionCore(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                head_dim=head_dim,
+                heads=heads,
+                negative_slope=negative_slope,
+                device=device,
+            )
 
         # Projection layer for residual connection
         # Use linear projection when dimensions don't match, identity otherwise
@@ -556,7 +604,13 @@ class MonoAxialAttention(nn.Module):
             return data
 
         # Compute attention delta using core
-        delta = self.core.forward(x_source, x_dest, edge_index)
+        # Pass xyz coordinates if using SpatialAttentionCore (Residue-to-Residue attention)
+        if isinstance(self.core, SpatialAttentionCore):
+            xyz_source = data[self.source_type].xyz  # [num_source_nodes, 3]
+            xyz_dest = data[self.dest_type].xyz  # [num_dest_nodes, 3]
+            delta = self.core.forward(x_source, x_dest, xyz_source, xyz_dest, edge_index)
+        else:
+            delta = self.core.forward(x_source, x_dest, edge_index)
 
         # Apply residual connection with projection: x_new = projection(x_old) + attention_output
         data[self.dest_type].x = self.projection(x_dest) + delta
@@ -904,196 +958,3 @@ class BiAxialAttention(nn.Module):
         data[self.dest_type].x = dest_x + delta
 
         return data
-
-
-class ResidueSelfAttentionTransformer(MessagePassing):
-    """
-    Distance-aware GATv2-style self-attention mechanism for Residue nodes.
-
-    This class extends the standard GATv2 attention by incorporating spatial information
-    through the Euclidean distance between residues. The distance is transformed
-    by a learnable linear layer and added to the feature combination before computing attention.
-
-    GATv2 + Distance Formula:
-        alpha_ij = softmax_j(att^T * LeakyReLU(W_dest*x_i + W_source*x_j + W_dist*d_ij))
-
-    Where:
-        - x_i, x_j: node features for target and source residues
-        - d_ij: Euclidean distance between residue coordinates
-        - W_dest, W_source, W_dist: learnable linear transformations
-
-    Key features:
-    - Specialized for Residue nodes only (no node_type parameter needed)
-    - Uses .xyz attribute for 3D coordinates [num_nodes, 3]
-    - Multi-head attention support
-    - Handles empty node sets and missing edges gracefully
-
-    References:
-        "How Attentive are Graph Attention Networks?" (Brody et al., 2021)
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        head_dim: int,
-        heads: int = 1,
-        negative_slope: float = 0.2,
-        device=None,
-    ):
-        """
-        Initialize ResidueSelfAttentionTransformer module.
-
-        Args:
-            in_channels: Dimension of input node embeddings (.x attribute)
-            out_channels: Dimension of output features (.x attribute after attention)
-            head_dim: Dimension per attention head
-            heads: Number of attention heads (default: 1)
-            negative_slope: LeakyReLU negative slope (default: 0.2)
-            device: torch device (CPU or CUDA)
-        """
-        # Initialize MessagePassing with add aggregation
-        super().__init__(aggr="add", node_dim=0)
-
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.head_dim = head_dim
-        self.heads = heads
-        self.negative_slope = negative_slope
-        self.device = device
-
-        # Fixed node type for residues
-        self.node_type = "Residue"
-        self.edge_type = ("Residue", "self_attn", "Residue")
-
-        # Pre-normalization layer for input (pre-norm pattern)
-        self.norm = nn.LayerNorm(in_channels, device=device)
-
-        # GATv2 transformations for destination (target) and source nodes
-        self.lin_dest = nn.Linear(
-            in_channels, heads * head_dim, bias=False, device=device
-        )
-        self.lin_source = nn.Linear(
-            in_channels, heads * head_dim, bias=False, device=device
-        )
-
-        # Distance transformation: distance (1D) to feature space
-        self.lin_dist = nn.Linear(1, heads * head_dim, bias=False, device=device)
-
-        # Attention parameter: shape (1, heads, head_dim)
-        self.att = nn.Parameter(torch.empty(1, heads, head_dim, device=device))
-
-        # Output projection: concatenated heads back to out_channels
-        self.out_proj = nn.Linear(heads * head_dim, out_channels, device=device)
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        """Initialize parameters using Glorot/Xavier initialization."""
-        nn.init.xavier_uniform_(self.lin_dest.weight)
-        nn.init.xavier_uniform_(self.lin_source.weight)
-        nn.init.xavier_uniform_(self.lin_dist.weight)
-        nn.init.xavier_uniform_(self.att)
-        nn.init.xavier_uniform_(self.out_proj.weight)
-        if self.out_proj.bias is not None:
-            nn.init.zeros_(self.out_proj.bias)
-
-    def forward(self, data):
-        """
-        Apply distance-aware self-attention to Residue nodes.
-
-        Args:
-            data: HeteroData graph with:
-                - data["Residue"].x: node features [num_nodes, in_channels]
-                - data["Residue"].xyz: coordinates [num_nodes, 3]
-
-        Returns:
-            Updated HeteroData with attention output in data["Residue"].x
-            Shape: [num_nodes, out_channels]
-        """
-        H, C = self.heads, self.head_dim
-
-        # Handle empty node sets
-        if data["Residue"].x.size(0) == 0:
-            return data
-
-        # Get input features and coordinates
-        x = data["Residue"].x  # [num_nodes, in_channels]
-        xyz = data["Residue"].xyz  # [num_nodes, 3]
-
-        # Get edge indices
-        edge_index = data[self.edge_type].edge_index  # [2, num_edges]
-
-        # Handle case with no edges
-        if edge_index.size(1) == 0:
-            return data
-
-        # Apply pre-normalization to inputs (pre-norm pattern)
-        x_norm = self.norm(x)
-
-        # Apply linear transformations and reshape for multi-head attention
-        x_dest = self.lin_dest(x_norm).view(-1, H, C)  # [num_nodes, heads, head_dim]
-        x_source = self.lin_source(x_norm).view(-1, H, C)  # [num_nodes, heads, head_dim]
-
-        # Use PyG message passing with coordinates
-        # PyG will automatically index xyz by edge_index, providing xyz_i and xyz_j in message()
-        out = self.propagate(edge_index, x=(x_source, x_dest), xyz=xyz, size=None)
-
-        # Flatten multi-head output: [num_nodes, heads * head_dim]
-        out = out.view(-1, self.heads * self.head_dim)
-
-        # Apply output projection: [num_nodes, heads * head_dim] -> [num_nodes, out_channels]
-        out = self.out_proj(out)
-
-        # Apply residual connection: x_new = x_old + attention_output
-        data["Residue"].x = x + out
-
-        return data
-
-    def message(self, x_i, x_j, xyz_i, xyz_j, index, size_i):
-        """
-        Compute attention-weighted messages with distance awareness.
-
-        PyTorch Geometric automatically indexes the inputs:
-        - x_i, xyz_i: indexed from x_dest and xyz (second tuple element), target nodes
-        - x_j, xyz_j: indexed from x_source and xyz (first tuple element), source nodes
-
-        Args:
-            x_i: Target node features [num_edges, heads, head_dim]
-                 (from x_dest, second element of propagate x tuple)
-            x_j: Source node features [num_edges, heads, head_dim]
-                 (from x_source, first element of propagate x tuple)
-            xyz_i: Target node coordinates [num_edges, 3]
-            xyz_j: Source node coordinates [num_edges, 3]
-            index: Target node indices for each edge [num_edges]
-            size_i: Number of target nodes
-
-        Returns:
-            Attention-weighted source features [num_edges, heads, head_dim]
-        """
-        # Compute Euclidean distance between residues
-        distance = calc_res_distance(xyz_i, xyz_j)  # [num_edges, 1]
-
-        # Transform distance to feature space
-        dist_features = self.lin_dist(distance)  # [num_edges, heads * head_dim]
-        dist_features = dist_features.view(
-            -1, self.heads, self.head_dim
-        )  # [num_edges, heads, head_dim]
-
-        # GATv2 + Distance: add transformed features before nonlinearity
-        # This is the key innovation: x = W_dest*x_i + W_source*x_j + W_dist*d_ij
-        x = x_i + x_j + dist_features  # [num_edges, heads, head_dim]
-
-        # Apply LeakyReLU nonlinearity (critical for GATv2's dynamic attention)
-        x = torch.nn.functional.leaky_relu(x, self.negative_slope)
-
-        # Compute attention scores: element-wise multiply with attention vector, then sum
-        # att: [1, heads, head_dim]
-        # x: [num_edges, heads, head_dim]
-        alpha = (x * self.att).sum(dim=-1)  # [num_edges, heads]
-
-        # Apply softmax per target node (handles batched graphs correctly)
-        alpha = softmax(alpha, index, num_nodes=size_i)
-
-        # Apply attention weights to source features
-        return x_j * alpha.unsqueeze(-1)  # [num_edges, heads, head_dim]
