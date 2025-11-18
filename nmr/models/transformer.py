@@ -1023,3 +1023,471 @@ class BiAxialAttention(nn.Module):
         data[self.dest_type].x = dest_x + delta
 
         return data
+
+
+class TriAxialAttention(nn.Module):
+    """
+    Triaxial attention mechanism using triple attention with feature combination.
+
+    This module updates destination node features by attending to three source node types
+    simultaneously, enabling the model to capture complex multi-modal relationships between
+    different node type combinations. The triple attention mechanism combines information
+    from all three sources through a learnable MLP before applying a residual update.
+
+    Architecture Overview:
+        The module employs three parallel attention cores with conditional spatial awareness:
+        1. Source 1 attention: aggregates information from source_type_1 nodes to dest_type
+        2. Source 2 attention: aggregates information from source_type_2 nodes to dest_type
+        3. Source 3 attention: aggregates information from source_type_3 nodes to dest_type
+
+        Each attention stream independently selects between:
+        - SpatialAttentionCore: When both source and dest are "Residue" (distance-aware)
+        - AttentionCore: For all other node type combinations (feature-only)
+
+        These attention outputs are combined with a linear transformation of the destination
+        features through a combination MLP, then applied as a residual update.
+
+    Attention Mechanism Selection:
+        - **Residue-to-Residue**: Uses SpatialAttentionCore (distance-aware attention)
+          - Incorporates Euclidean distance between node coordinates (.xyz attribute)
+          - Enables biologically meaningful spatial relationships in protein structures
+        - **All other cases**: Uses AttentionCore (feature-only attention)
+          - Peak-to-Peak, Noe-to-Noe, or any combination with non-Residue types
+          - Standard GATv2 attention without spatial information
+
+    Triple Attention Mechanism:
+        - Source 1 Attention: Destination nodes query Source 1 nodes using edge_type_1
+        - Source 2 Attention: Destination nodes query Source 2 nodes using edge_type_2
+        - Source 3 Attention: Destination nodes query Source 3 nodes using edge_type_3
+
+        Each stream can independently use spatial or non-spatial attention based on
+        node types. For example, one stream can be Residue->Residue (spatial) while
+        the others are Peak->Residue (non-spatial).
+
+    Edge Type Naming Convention:
+        Edge types follow the pattern (source_type, edge_name, dest_type):
+        - (source_type_1, edge_name_1, dest_type)
+        - (source_type_2, edge_name_2, dest_type)
+        - (source_type_3, edge_name_3, dest_type)
+
+        Default edge names are "triaxial_attn_1", "triaxial_attn_2", and "triaxial_attn_3",
+        but can be customized via constructor parameters.
+
+    Feature Combination Logic:
+        1. Transform destination features: dest_transformed = linear(dest.x)
+        2. Concatenate four components: combined = [delta_1, delta_2, delta_3, dest_transformed]
+        3. Apply MLP: delta = MLP(combined)
+           - Architecture: Linear -> ReLU -> Linear (no internal LayerNorm - pre-norm pattern)
+           - Input dimension: channels * 4
+           - Hidden dimension: configurable (default: channels * 2)
+           - Output dimension: channels
+        4. Apply residual update: dest.x = dest.x + delta (true residual connection)
+
+    Empty Set Handling:
+        The module handles edge cases gracefully:
+        - Empty destination nodes: early return without modification
+        - Empty source_type_1, source_type_2, or source_type_3 nodes: early return without modification
+        - Empty edge sets (zero edges): early return without modification
+
+        All empty set checks occur at the start of forward() to fail fast.
+
+    Dimension Flow:
+        Input:
+            dest.x: [num_dests, channels]
+            source_1.x: [num_src1, channels]
+            source_2.x: [num_src2, channels]
+            source_3.x: [num_src3, channels]
+
+        Attention Outputs:
+            delta_1: [num_dests, channels]
+            delta_2: [num_dests, channels]
+            delta_3: [num_dests, channels]
+            dest_transformed: [num_dests, channels]
+
+        Combination:
+            combined: [num_dests, channels * 4]
+            delta: [num_dests, channels]
+
+        Output:
+            dest.x: [num_dests, channels]
+
+    Integration:
+        This module is designed to integrate seamlessly with the existing attention
+        infrastructure:
+        - Uses AttentionCore and SpatialAttentionCore for attention computation (reusability)
+        - Compatible with nn.ModuleList and nn.Sequential
+        - Follows the same initialization pattern as other attention modules
+        - Works with both CPU and CUDA devices
+        - Handles batched graphs through PyG's batching mechanism
+
+    Args:
+        source_type_1: Type of first source node type (e.g., "Residue")
+        source_type_2: Type of second source node type (e.g., "Residue")
+        source_type_3: Type of third source node type (e.g., "Peak")
+        dest_type: Type of destination node type (e.g., "Noe")
+        channels: Dimension of node embeddings (.x attribute) for all node types.
+            Used for both input and output dimensions (assumes in_channels == out_channels).
+        head_dim: Dimension per attention head (for multi-head attention)
+        heads: Number of attention heads (default: 1)
+        negative_slope: LeakyReLU negative slope for attention computation (default: 0.2)
+        edge_name_1: Edge type name for first source (default: "triaxial_attn_1")
+        edge_name_2: Edge type name for second source (default: "triaxial_attn_2")
+        edge_name_3: Edge type name for third source (default: "triaxial_attn_3")
+        hidden_size: Hidden dimension for combination MLP (default: channels * 2)
+        device: torch device for computation (CPU or CUDA)
+
+    Example - Generic Usage:
+        >>> # Create a triaxial attention module for any node type combination
+        >>> module = TriAxialAttention(
+        ...     source_type_1="NodeTypeA",
+        ...     source_type_2="NodeTypeB",
+        ...     source_type_3="NodeTypeC",
+        ...     dest_type="NodeTypeD",
+        ...     channels=64,
+        ...     head_dim=16,
+        ...     heads=4,
+        ...     device='cpu'
+        ... )
+        >>> updated_data = module(data)
+        >>> # Destination features are updated in-place: data["NodeTypeD"].x
+
+    Example - NMR-Specific Usage (Residue pairs + Peak):
+        >>> # Use NOE as destination, two Residue types and Peak as sources
+        >>> module = TriAxialAttention(
+        ...     source_type_1="Residue",
+        ...     source_type_2="Residue",
+        ...     source_type_3="Peak",
+        ...     dest_type="Noe",
+        ...     channels=64,
+        ...     head_dim=16,
+        ...     heads=4,
+        ...     device='cpu'
+        ... )
+        >>> updated_data = module(data)
+
+    Example - Mixed Spatial/Non-Spatial Attention:
+        >>> # First two streams use spatial attention (Residue->Noe), third is non-spatial (Peak->Noe)
+        >>> module = TriAxialAttention(
+        ...     source_type_1="Residue",
+        ...     source_type_2="Residue",
+        ...     source_type_3="Peak",
+        ...     dest_type="Noe",
+        ...     channels=64,
+        ...     head_dim=16,
+        ...     heads=4,
+        ...     device='cpu'
+        ... )
+        >>> # data["Residue"].xyz must exist when Residue is involved in spatial attention
+        >>> updated_data = module(data)
+
+    Requirements:
+        - Residue nodes must have .xyz attribute (3D coordinates) when using spatial attention
+        - All nodes must have .x attribute (feature embeddings)
+
+    References:
+        This module extends the BiAxialAttention mechanism to handle triple attention
+        over any combination of heterogeneous node types.
+    """
+
+    def __init__(
+        self,
+        source_type_1: str,
+        source_type_2: str,
+        source_type_3: str,
+        dest_type: str,
+        channels: int,
+        head_dim: int,
+        heads: int = 1,
+        negative_slope: float = 0.2,
+        edge_name_1: str = None,
+        edge_name_2: str = None,
+        edge_name_3: str = None,
+        hidden_size: int = None,
+        device=None,
+    ):
+        """
+        Initialize TriAxialAttention module.
+
+        Creates three AttentionCore/SpatialAttentionCore instances for triple attention from
+        three source types, a linear transformation layer for destination features, and a
+        combination MLP for merging all information streams.
+
+        Args:
+            source_type_1: Type of first source node type (e.g., "Residue").
+            source_type_2: Type of second source node type (e.g., "Residue").
+            source_type_3: Type of third source node type (e.g., "Peak").
+            dest_type: Type of destination node type (e.g., "Noe").
+            channels: Dimension of node embeddings (.x attribute) for all node types.
+                Used for both input and output (assumes in_channels == out_channels).
+                Must match the feature dimension of all source and destination nodes.
+            head_dim: Dimension per attention head. Total attention dimension per core
+                is heads * head_dim.
+            heads: Number of attention heads for multi-head attention (default: 1).
+                Higher values allow the model to attend to different representation
+                subspaces simultaneously.
+            negative_slope: LeakyReLU negative slope for attention computation (default: 0.2).
+                Controls the slope for negative values in the attention scoring function.
+            edge_name_1: Edge type name for first source (default: "triaxial_attn_1").
+            edge_name_2: Edge type name for second source (default: "triaxial_attn_2").
+            edge_name_3: Edge type name for third source (default: "triaxial_attn_3").
+            hidden_size: Hidden dimension for combination MLP (default: channels * 2).
+                If None, defaults to channels * 2 for sufficient representational capacity.
+            device: torch device (CPU or CUDA) for parameter initialization and computation.
+                All parameters and computations will use this device.
+        """
+        super().__init__()
+
+        # Store node types
+        self.source_type_1 = source_type_1
+        self.source_type_2 = source_type_2
+        self.source_type_3 = source_type_3
+        self.dest_type = dest_type
+
+        # Store configuration
+        self.channels = channels
+        self.head_dim = head_dim
+        self.heads = heads
+        self.device = device
+
+        # Default hidden size for combination MLP
+        if hidden_size is None:
+            hidden_size = channels * 2
+
+        # Generate default edge names if not provided
+        if edge_name_1 is None:
+            edge_name_1 = "triaxial_attn_1"
+        if edge_name_2 is None:
+            edge_name_2 = "triaxial_attn_2"
+        if edge_name_3 is None:
+            edge_name_3 = "triaxial_attn_3"
+
+        # Construct edge type tuples dynamically
+        # Convention: (source_type, edge_name, dest_type)
+        self.edge_type_1 = (source_type_1, edge_name_1, dest_type)
+        self.edge_type_2 = (source_type_2, edge_name_2, dest_type)
+        self.edge_type_3 = (source_type_3, edge_name_3, dest_type)
+
+        # Triple attention cores for all three sources
+        # Use SpatialAttentionCore when both source and dest are Residue nodes
+        # Otherwise use standard AttentionCore (for Peak, Noe, or mixed-type attention)
+        if source_type_1 == "Residue" and dest_type == "Residue":
+            self.attention_1 = SpatialAttentionCore(
+                in_channels=channels,
+                out_channels=channels,
+                head_dim=head_dim,
+                heads=heads,
+                negative_slope=negative_slope,
+                device=device,
+            )
+        else:
+            self.attention_1 = AttentionCore(
+                in_channels=channels,
+                out_channels=channels,
+                head_dim=head_dim,
+                heads=heads,
+                negative_slope=negative_slope,
+                device=device,
+            )
+
+        if source_type_2 == "Residue" and dest_type == "Residue":
+            self.attention_2 = SpatialAttentionCore(
+                in_channels=channels,
+                out_channels=channels,
+                head_dim=head_dim,
+                heads=heads,
+                negative_slope=negative_slope,
+                device=device,
+            )
+        else:
+            self.attention_2 = AttentionCore(
+                in_channels=channels,
+                out_channels=channels,
+                head_dim=head_dim,
+                heads=heads,
+                negative_slope=negative_slope,
+                device=device,
+            )
+
+        if source_type_3 == "Residue" and dest_type == "Residue":
+            self.attention_3 = SpatialAttentionCore(
+                in_channels=channels,
+                out_channels=channels,
+                head_dim=head_dim,
+                heads=heads,
+                negative_slope=negative_slope,
+                device=device,
+            )
+        else:
+            self.attention_3 = AttentionCore(
+                in_channels=channels,
+                out_channels=channels,
+                head_dim=head_dim,
+                heads=heads,
+                negative_slope=negative_slope,
+                device=device,
+            )
+
+        # Destination feature transformation layer
+        # Projects destination features to output dimension for combination
+        self.dest_linear = nn.Linear(channels, channels, device=device)
+
+        # Pre-normalization layers for inputs (pre-norm pattern)
+        self.norm_source_1 = nn.LayerNorm(channels, device=device)
+        self.norm_source_2 = nn.LayerNorm(channels, device=device)
+        self.norm_source_3 = nn.LayerNorm(channels, device=device)
+        self.norm_dest = nn.LayerNorm(channels, device=device)
+
+        # Combination MLP: merges attention outputs with destination features
+        # Architecture: Linear -> ReLU -> Linear (no internal LayerNorm - pre-norm pattern)
+        # Input: delta_1 + delta_2 + delta_3 + dest_transformed = channels * 4
+        # Output: channels (for residual application)
+        mlp_input_size = channels * 4
+        self.combine_mlp = nn.Sequential(
+            nn.Linear(mlp_input_size, hidden_size, device=device),
+            nn.ReLU(),
+            nn.Linear(hidden_size, channels, device=device),
+        )
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        """
+        Initialize parameters using Glorot/Xavier initialization.
+
+        Initializes:
+        - Destination linear layer: xavier_uniform for weights, zeros for biases
+        - MLP layers: xavier_uniform for weights, zeros for biases
+
+        Note: AttentionCore and SpatialAttentionCore instances initialize their own
+        parameters during construction via their reset_parameters() method.
+        """
+        # Initialize destination linear layer
+        nn.init.xavier_uniform_(self.dest_linear.weight)
+        if self.dest_linear.bias is not None:
+            nn.init.zeros_(self.dest_linear.bias)
+
+        # Initialize MLP layers
+        for module in self.combine_mlp:
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+
+    def forward(self, data):
+        """
+        Apply triaxial attention to destination nodes in HeteroData graph.
+
+        Performs the following steps:
+        1. Validate that all required node types are non-empty
+        2. Extract features from source_type_1, source_type_2, source_type_3, and dest_type nodes
+        3. Compute attention from source_type_1 (source_1 -> dest)
+        4. Compute attention from source_type_2 (source_2 -> dest)
+        5. Compute attention from source_type_3 (source_3 -> dest)
+        6. Transform destination features with linear layer
+        7. Concatenate all four components (delta_1 + delta_2 + delta_3 + dest_transformed)
+        8. Apply combination MLP to compute final delta
+        9. Apply residual update to destination features (in-place modification)
+
+        Args:
+            data: HeteroData graph containing:
+                - data[dest_type].x: Destination features [num_dests, channels]
+                - data[source_type_1].x: Source 1 features [num_src1, channels]
+                - data[source_type_2].x: Source 2 features [num_src2, channels]
+                - data[source_type_3].x: Source 3 features [num_src3, channels]
+                - data[edge_type_1].edge_index: Edge indices [2, num_edges_1]
+                - data[edge_type_2].edge_index: Edge indices [2, num_edges_2]
+                - data[edge_type_3].edge_index: Edge indices [2, num_edges_3]
+
+        Returns:
+            HeteroData: Updated graph with modified destination features.
+                - data[dest_type].x: Updated features [num_dests, channels]
+                - All other node features remain unchanged
+
+        Note:
+            If any node type is empty (size 0) or if any edge set is empty,
+            the function returns the input data unchanged without error.
+        """
+        # Handle empty node sets (early return)
+        # Check each node type independently to fail fast
+        if data[self.dest_type].x.size(0) == 0:
+            return data
+        if data[self.source_type_1].x.size(0) == 0:
+            return data
+        if data[self.source_type_2].x.size(0) == 0:
+            return data
+        if data[self.source_type_3].x.size(0) == 0:
+            return data
+
+        # Extract features from all node types
+        dest_x = data[self.dest_type].x  # [num_dests, channels]
+        source_x_1 = data[self.source_type_1].x  # [num_src1, channels]
+        source_x_2 = data[self.source_type_2].x  # [num_src2, channels]
+        source_x_3 = data[self.source_type_3].x  # [num_src3, channels]
+
+        # Get edge indices for all three attention mechanisms
+        edge_index_1 = data[self.edge_type_1].edge_index  # [2, num_edges_1]
+        edge_index_2 = data[self.edge_type_2].edge_index  # [2, num_edges_2]
+        edge_index_3 = data[self.edge_type_3].edge_index  # [2, num_edges_3]
+
+        # Handle empty edge sets
+        # All three edge sets must be non-empty for triaxial attention to work
+        if edge_index_1.size(1) == 0 or edge_index_2.size(1) == 0 or edge_index_3.size(1) == 0:
+            return data
+
+        # Apply pre-normalization to inputs (pre-norm pattern)
+        # Note: AttentionCore also has its own normalization layers
+        source_x_1_norm = self.norm_source_1(source_x_1)
+        source_x_2_norm = self.norm_source_2(source_x_2)
+        source_x_3_norm = self.norm_source_3(source_x_3)
+        dest_x_norm = self.norm_dest(dest_x)
+
+        # Compute attention from first source: source_type_1 (source) -> dest_type (dest)
+        # Pass xyz coordinates if using SpatialAttentionCore (Residue-to-Residue attention)
+        if isinstance(self.attention_1, SpatialAttentionCore):
+            xyz_source_1 = data[self.source_type_1].xyz  # [num_src1, 3]
+            xyz_dest = data[self.dest_type].xyz  # [num_dests, 3]
+            delta_1 = self.attention_1(source_x_1_norm, dest_x_norm, xyz_source_1, xyz_dest, edge_index_1)
+        else:
+            delta_1 = self.attention_1(source_x_1_norm, dest_x_norm, edge_index_1)
+
+        # Compute attention from second source: source_type_2 (source) -> dest_type (dest)
+        # Pass xyz coordinates if using SpatialAttentionCore (Residue-to-Residue attention)
+        if isinstance(self.attention_2, SpatialAttentionCore):
+            xyz_source_2 = data[self.source_type_2].xyz  # [num_src2, 3]
+            # Reuse xyz_dest if already extracted, otherwise extract it
+            if not isinstance(self.attention_1, SpatialAttentionCore):
+                xyz_dest = data[self.dest_type].xyz  # [num_dests, 3]
+            delta_2 = self.attention_2(source_x_2_norm, dest_x_norm, xyz_source_2, xyz_dest, edge_index_2)
+        else:
+            delta_2 = self.attention_2(source_x_2_norm, dest_x_norm, edge_index_2)
+
+        # Compute attention from third source: source_type_3 (source) -> dest_type (dest)
+        # Pass xyz coordinates if using SpatialAttentionCore (Residue-to-Residue attention)
+        if isinstance(self.attention_3, SpatialAttentionCore):
+            xyz_source_3 = data[self.source_type_3].xyz  # [num_src3, 3]
+            # Reuse xyz_dest if already extracted, otherwise extract it
+            if not isinstance(self.attention_1, SpatialAttentionCore) and not isinstance(
+                self.attention_2, SpatialAttentionCore
+            ):
+                xyz_dest = data[self.dest_type].xyz  # [num_dests, 3]
+            delta_3 = self.attention_3(source_x_3_norm, dest_x_norm, xyz_source_3, xyz_dest, edge_index_3)
+        else:
+            delta_3 = self.attention_3(source_x_3_norm, dest_x_norm, edge_index_3)
+
+        # Transform destination features to output dimension
+        dest_transformed = self.dest_linear(dest_x_norm)  # [num_dests, channels]
+
+        # Concatenate all four components for combination MLP
+        # Feature combination captures interactions between all three source types
+        combined = torch.cat(
+            [delta_1, delta_2, delta_3, dest_transformed], dim=-1
+        )  # [num_dests, channels * 4]
+
+        # Apply combination MLP to compute final delta
+        # MLP learns to weight and combine the four information streams
+        delta = self.combine_mlp(combined)  # [num_dests, channels]
+
+        # Apply residual update to original destination features (in-place modification)
+        data[self.dest_type].x = dest_x + delta
+
+        return data

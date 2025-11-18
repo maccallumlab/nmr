@@ -19,7 +19,13 @@ from torch_geometric.data import HeteroData
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from nmr.models.transformer import MonoAxialAttention, BiAxialAttention, SpatialAttentionCore, AttentionCore
+from nmr.models.transformer import (
+    MonoAxialAttention,
+    BiAxialAttention,
+    TriAxialAttention,
+    SpatialAttentionCore,
+    AttentionCore,
+)
 
 
 class TestMonoAxialAttention(unittest.TestCase):
@@ -754,6 +760,423 @@ class TestBiAxialAttention(unittest.TestCase):
         self.assertEqual(output["Noe"].x.shape, (num_noes, self.channels))
         self.assertFalse(torch.isnan(output["Noe"].x).any())
         self.assertFalse(torch.isinf(output["Noe"].x).any())
+
+
+class TestTriAxialAttention(unittest.TestCase):
+    """Test TriAxial triple-attention mechanism with spatial awareness."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.device = torch.device("cpu")
+        self.channels = 128
+        self.head_dim = 64
+        self.heads = 4
+
+    def test_triaxial_core_selection_all_spatial(self):
+        """Test that all three cores use SpatialAttentionCore for Residue-to-Residue."""
+        # All three sources and dest are Residue: all cores should be spatial
+        attention = TriAxialAttention(
+            source_type_1="Residue",
+            source_type_2="Residue",
+            source_type_3="Residue",
+            dest_type="Residue",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device,
+        )
+
+        self.assertIsInstance(
+            attention.attention_1,
+            SpatialAttentionCore,
+            "attention_1 should use SpatialAttentionCore for Residue->Residue",
+        )
+        self.assertIsInstance(
+            attention.attention_2,
+            SpatialAttentionCore,
+            "attention_2 should use SpatialAttentionCore for Residue->Residue",
+        )
+        self.assertIsInstance(
+            attention.attention_3,
+            SpatialAttentionCore,
+            "attention_3 should use SpatialAttentionCore for Residue->Residue",
+        )
+
+    def test_triaxial_core_selection_mixed(self):
+        """Test mixed core selection: two spatial, one non-spatial."""
+        # Source 1 and 2 are Residue (spatial), Source 3 is Peak (non-spatial), dest is Residue
+        attention = TriAxialAttention(
+            source_type_1="Residue",
+            source_type_2="Residue",
+            source_type_3="Peak",
+            dest_type="Residue",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device,
+        )
+
+        self.assertIsInstance(
+            attention.attention_1,
+            SpatialAttentionCore,
+            "attention_1 should use SpatialAttentionCore for Residue->Residue",
+        )
+        self.assertIsInstance(
+            attention.attention_2,
+            SpatialAttentionCore,
+            "attention_2 should use SpatialAttentionCore for Residue->Residue",
+        )
+        self.assertIsInstance(
+            attention.attention_3,
+            AttentionCore,
+            "attention_3 should use AttentionCore for Peak->Residue",
+        )
+
+    def test_triaxial_core_selection_all_non_spatial(self):
+        """Test that all cores use AttentionCore for non-Residue combinations."""
+        # All sources and dest are non-Residue
+        attention = TriAxialAttention(
+            source_type_1="Peak",
+            source_type_2="Peak",
+            source_type_3="Peak",
+            dest_type="Noe",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device,
+        )
+
+        self.assertIsInstance(
+            attention.attention_1,
+            AttentionCore,
+            "attention_1 should use AttentionCore for Peak->Noe",
+        )
+        self.assertIsInstance(
+            attention.attention_2,
+            AttentionCore,
+            "attention_2 should use AttentionCore for Peak->Noe",
+        )
+        self.assertIsInstance(
+            attention.attention_3,
+            AttentionCore,
+            "attention_3 should use AttentionCore for Peak->Noe",
+        )
+
+    def test_triaxial_residue_triple_attention_output_shape(self):
+        """Test Residue-to-Residue triple-attention produces correct output shape."""
+        data = HeteroData()
+        num_residues = 10
+
+        # Create Residue nodes with features and coordinates
+        data["Residue"].x = torch.randn(num_residues, self.channels, device=self.device)
+        data["Residue"].xyz = torch.randn(num_residues, 3, device=self.device)
+
+        # Create TriAxial attention module (all three streams Residue->Residue)
+        attention = TriAxialAttention(
+            source_type_1="Residue",
+            source_type_2="Residue",
+            source_type_3="Residue",
+            dest_type="Residue",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device,
+        )
+
+        # Create edges for all three attention streams
+        edge_index = torch.combinations(torch.arange(num_residues), r=2, with_replacement=True).t()
+        data[("Residue", "triaxial_attn_1", "Residue")].edge_index = edge_index
+        data[("Residue", "triaxial_attn_2", "Residue")].edge_index = edge_index
+        data[("Residue", "triaxial_attn_3", "Residue")].edge_index = edge_index
+
+        # Forward pass
+        output = attention(data)
+
+        # Check output shape
+        expected_shape = (num_residues, self.channels)
+        self.assertEqual(output["Residue"].x.shape, expected_shape)
+
+        # Verify output is not NaN or Inf
+        self.assertFalse(torch.isnan(output["Residue"].x).any())
+        self.assertFalse(torch.isinf(output["Residue"].x).any())
+
+    def test_triaxial_residue_attention_uses_distance(self):
+        """Test that triple Residue attention output changes with distance."""
+        num_residues = 6
+
+        # Create attention module
+        attention = TriAxialAttention(
+            source_type_1="Residue",
+            source_type_2="Residue",
+            source_type_3="Residue",
+            dest_type="Residue",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device,
+        )
+
+        # Create two graphs with same features but different coordinates
+        features = torch.randn(num_residues, self.channels, device=self.device)
+
+        # Graph 1: all residues at origin (distance = 0)
+        data1 = HeteroData()
+        data1["Residue"].x = features.clone()
+        data1["Residue"].xyz = torch.zeros(num_residues, 3, device=self.device)
+
+        # Graph 2: residues at different positions
+        data2 = HeteroData()
+        data2["Residue"].x = features.clone()
+        data2["Residue"].xyz = torch.randn(num_residues, 3, device=self.device)
+
+        # Create same edge structure for both
+        edge_index = torch.combinations(torch.arange(num_residues), r=2, with_replacement=True).t()
+        data1[("Residue", "triaxial_attn_1", "Residue")].edge_index = edge_index
+        data1[("Residue", "triaxial_attn_2", "Residue")].edge_index = edge_index
+        data1[("Residue", "triaxial_attn_3", "Residue")].edge_index = edge_index
+        data2[("Residue", "triaxial_attn_1", "Residue")].edge_index = edge_index
+        data2[("Residue", "triaxial_attn_2", "Residue")].edge_index = edge_index
+        data2[("Residue", "triaxial_attn_3", "Residue")].edge_index = edge_index
+
+        # Set seed for reproducibility
+        torch.manual_seed(42)
+        attention.reset_parameters()
+
+        # Forward pass on both graphs
+        output1 = attention(data1)
+        output2 = attention(data2)
+
+        # Outputs should differ because distances differ (spatial attention active in all streams)
+        self.assertFalse(
+            torch.allclose(output1["Residue"].x, output2["Residue"].x, rtol=1e-3, atol=1e-5),
+            "TriAxial Residue attention outputs should differ when coordinates differ",
+        )
+
+    def test_triaxial_gradient_flow_through_xyz(self):
+        """Test that gradients flow through xyz coordinates for spatial streams."""
+        data = HeteroData()
+        num_residues = 6
+
+        # Create features and coordinates with gradient tracking
+        features = torch.randn(num_residues, self.channels, device=self.device, requires_grad=True)
+        coordinates = torch.randn(num_residues, 3, device=self.device, requires_grad=True)
+
+        data["Residue"].x = features
+        data["Residue"].xyz = coordinates
+
+        # Create TriAxial attention module
+        attention = TriAxialAttention(
+            source_type_1="Residue",
+            source_type_2="Residue",
+            source_type_3="Residue",
+            dest_type="Residue",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device,
+        )
+
+        # Create edges
+        edge_index = torch.combinations(torch.arange(num_residues), r=2, with_replacement=True).t()
+        data[("Residue", "triaxial_attn_1", "Residue")].edge_index = edge_index
+        data[("Residue", "triaxial_attn_2", "Residue")].edge_index = edge_index
+        data[("Residue", "triaxial_attn_3", "Residue")].edge_index = edge_index
+
+        # Forward pass
+        output = attention(data)
+
+        # Compute loss and backward pass
+        loss = output["Residue"].x.sum()
+        loss.backward()
+
+        # Check gradients exist on both features and coordinates
+        self.assertIsNotNone(features.grad, "Gradients should flow through features")
+        self.assertIsNotNone(coordinates.grad, "Gradients should flow through coordinates")
+
+        # Check gradients are non-zero (spatial attention uses coordinates)
+        self.assertTrue(torch.any(features.grad != 0), "Feature gradients should be non-zero")
+        self.assertTrue(torch.any(coordinates.grad != 0), "Coordinate gradients should be non-zero")
+
+    def test_triaxial_backward_compatibility_non_residue(self):
+        """Test that non-Residue triple-attention behavior works correctly."""
+        data = HeteroData()
+        num_peaks = 8
+        num_noes = 5
+
+        # Create Peak and Noe nodes (no xyz)
+        data["Peak"].x = torch.randn(num_peaks, self.channels, device=self.device)
+        data["Noe"].x = torch.randn(num_noes, self.channels, device=self.device)
+
+        # Create edges (source indices from peaks, dest indices from noes)
+        src_indices_1 = torch.randint(0, num_peaks, (15,), device=self.device)
+        dst_indices_1 = torch.randint(0, num_noes, (15,), device=self.device)
+        edge_index_1 = torch.stack([src_indices_1, dst_indices_1], dim=0)
+
+        src_indices_2 = torch.randint(0, num_peaks, (15,), device=self.device)
+        dst_indices_2 = torch.randint(0, num_noes, (15,), device=self.device)
+        edge_index_2 = torch.stack([src_indices_2, dst_indices_2], dim=0)
+
+        src_indices_3 = torch.randint(0, num_peaks, (15,), device=self.device)
+        dst_indices_3 = torch.randint(0, num_noes, (15,), device=self.device)
+        edge_index_3 = torch.stack([src_indices_3, dst_indices_3], dim=0)
+
+        data[("Peak", "triaxial_attn_1", "Noe")].edge_index = edge_index_1
+        data[("Peak", "triaxial_attn_2", "Noe")].edge_index = edge_index_2
+        data[("Peak", "triaxial_attn_3", "Noe")].edge_index = edge_index_3
+
+        # Create TriAxial attention module
+        attention = TriAxialAttention(
+            source_type_1="Peak",
+            source_type_2="Peak",
+            source_type_3="Peak",
+            dest_type="Noe",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device,
+        )
+
+        # Should work without xyz coordinates
+        output = attention(data)
+
+        # Check output
+        self.assertEqual(output["Noe"].x.shape, (num_noes, self.channels))
+        self.assertFalse(torch.isnan(output["Noe"].x).any())
+        self.assertFalse(torch.isinf(output["Noe"].x).any())
+
+    def test_triaxial_mixed_spatial_nonspatial(self):
+        """Test mixed scenario: two spatial streams, one non-spatial stream."""
+        data = HeteroData()
+        num_residues = 8
+        num_peaks = 12
+        num_noes = 5
+
+        # Create nodes
+        data["Residue"].x = torch.randn(num_residues, self.channels, device=self.device)
+        data["Residue"].xyz = torch.randn(num_residues, 3, device=self.device)
+        data["Peak"].x = torch.randn(num_peaks, self.channels, device=self.device)
+        data["Noe"].x = torch.randn(num_noes, self.channels, device=self.device)
+
+        # Create TriAxial attention: Residue->Noe (non-spatial) + Residue->Noe (non-spatial) + Peak->Noe (non-spatial)
+        # Note: Even though sources are Residue, dest is Noe, so all streams are non-spatial
+        attention = TriAxialAttention(
+            source_type_1="Residue",
+            source_type_2="Residue",
+            source_type_3="Peak",
+            dest_type="Noe",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device,
+        )
+
+        # All cores should be non-spatial (dest is not Residue)
+        self.assertIsInstance(attention.attention_1, AttentionCore)
+        self.assertIsInstance(attention.attention_2, AttentionCore)
+        self.assertIsInstance(attention.attention_3, AttentionCore)
+
+        # Create edges (source indices from respective source types, dest indices from noes)
+        src_indices_1 = torch.randint(0, num_residues, (20,), device=self.device)
+        dst_indices_1 = torch.randint(0, num_noes, (20,), device=self.device)
+        edge_index_1 = torch.stack([src_indices_1, dst_indices_1], dim=0)
+
+        src_indices_2 = torch.randint(0, num_residues, (20,), device=self.device)
+        dst_indices_2 = torch.randint(0, num_noes, (20,), device=self.device)
+        edge_index_2 = torch.stack([src_indices_2, dst_indices_2], dim=0)
+
+        src_indices_3 = torch.randint(0, num_peaks, (20,), device=self.device)
+        dst_indices_3 = torch.randint(0, num_noes, (20,), device=self.device)
+        edge_index_3 = torch.stack([src_indices_3, dst_indices_3], dim=0)
+
+        data[("Residue", "triaxial_attn_1", "Noe")].edge_index = edge_index_1
+        data[("Residue", "triaxial_attn_2", "Noe")].edge_index = edge_index_2
+        data[("Peak", "triaxial_attn_3", "Noe")].edge_index = edge_index_3
+
+        # Forward pass
+        output = attention(data)
+
+        # Check output
+        self.assertEqual(output["Noe"].x.shape, (num_noes, self.channels))
+        self.assertFalse(torch.isnan(output["Noe"].x).any())
+        self.assertFalse(torch.isinf(output["Noe"].x).any())
+
+    def test_triaxial_empty_node_sets(self):
+        """Test handling of empty node sets."""
+        data = HeteroData()
+
+        # Create empty node sets
+        data["Peak"].x = torch.zeros(0, self.channels, device=self.device)
+        data["Noe"].x = torch.zeros(0, self.channels, device=self.device)
+
+        attention = TriAxialAttention(
+            source_type_1="Peak",
+            source_type_2="Peak",
+            source_type_3="Peak",
+            dest_type="Noe",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device,
+        )
+
+        # Create empty edge indices
+        data[("Peak", "triaxial_attn_1", "Noe")].edge_index = torch.zeros(
+            2, 0, dtype=torch.long, device=self.device
+        )
+        data[("Peak", "triaxial_attn_2", "Noe")].edge_index = torch.zeros(
+            2, 0, dtype=torch.long, device=self.device
+        )
+        data[("Peak", "triaxial_attn_3", "Noe")].edge_index = torch.zeros(
+            2, 0, dtype=torch.long, device=self.device
+        )
+
+        # Should not crash and return input unchanged
+        output = attention(data)
+
+        # When there are no nodes, input should remain unchanged
+        expected_shape = (0, self.channels)
+        self.assertEqual(output["Noe"].x.shape, expected_shape)
+
+    def test_triaxial_empty_edge_sets(self):
+        """Test handling of empty edge sets with non-empty nodes."""
+        data = HeteroData()
+        num_peaks = 5
+        num_noes = 3
+
+        # Create non-empty node sets
+        data["Peak"].x = torch.randn(num_peaks, self.channels, device=self.device)
+        data["Noe"].x = torch.randn(num_noes, self.channels, device=self.device)
+
+        attention = TriAxialAttention(
+            source_type_1="Peak",
+            source_type_2="Peak",
+            source_type_3="Peak",
+            dest_type="Noe",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device,
+        )
+
+        # Create empty edge indices (at least one empty to trigger early return)
+        data[("Peak", "triaxial_attn_1", "Noe")].edge_index = torch.zeros(
+            2, 0, dtype=torch.long, device=self.device
+        )
+        data[("Peak", "triaxial_attn_2", "Noe")].edge_index = torch.zeros(
+            2, 0, dtype=torch.long, device=self.device
+        )
+        data[("Peak", "triaxial_attn_3", "Noe")].edge_index = torch.zeros(
+            2, 0, dtype=torch.long, device=self.device
+        )
+
+        # Store original features
+        original_noe_features = data["Noe"].x.clone()
+
+        # Should return input unchanged
+        output = attention(data)
+
+        # Check that features are unchanged
+        self.assertTrue(torch.allclose(output["Noe"].x, original_noe_features))
 
 
 if __name__ == "__main__":
