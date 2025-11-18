@@ -19,7 +19,7 @@ from torch_geometric.data import HeteroData
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from nmr.models.transformer import MonoAxialAttention
+from nmr.models.transformer import MonoAxialAttention, BiAxialAttention, SpatialAttentionCore, AttentionCore
 
 
 class TestMonoAxialAttention(unittest.TestCase):
@@ -447,6 +447,313 @@ class TestMonoAxialAttention(unittest.TestCase):
             AttentionCore,
             "Peak-to-Residue (mixed types) should use AttentionCore"
         )
+
+
+class TestBiAxialAttention(unittest.TestCase):
+    """Test BiAxial dual-attention mechanism with spatial awareness."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.device = torch.device("cpu")
+        self.channels = 128
+        self.head_dim = 64
+        self.heads = 4
+
+    def test_biaxial_core_selection_both_spatial(self):
+        """Test that both cores use SpatialAttentionCore for Residue-to-Residue."""
+        # Both sources and dest are Residue: both cores should be spatial
+        attention = BiAxialAttention(
+            source_type_1="Residue",
+            source_type_2="Residue",
+            dest_type="Residue",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device
+        )
+
+        self.assertIsInstance(
+            attention.attention_1,
+            SpatialAttentionCore,
+            "attention_1 should use SpatialAttentionCore for Residue->Residue"
+        )
+        self.assertIsInstance(
+            attention.attention_2,
+            SpatialAttentionCore,
+            "attention_2 should use SpatialAttentionCore for Residue->Residue"
+        )
+
+    def test_biaxial_core_selection_mixed(self):
+        """Test mixed core selection: one spatial, one non-spatial."""
+        # Source 1 is Residue (spatial), Source 2 is Peak (non-spatial), dest is Residue
+        attention = BiAxialAttention(
+            source_type_1="Residue",
+            source_type_2="Peak",
+            dest_type="Residue",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device
+        )
+
+        self.assertIsInstance(
+            attention.attention_1,
+            SpatialAttentionCore,
+            "attention_1 should use SpatialAttentionCore for Residue->Residue"
+        )
+        self.assertIsInstance(
+            attention.attention_2,
+            AttentionCore,
+            "attention_2 should use AttentionCore for Peak->Residue"
+        )
+
+    def test_biaxial_core_selection_both_non_spatial(self):
+        """Test that both cores use AttentionCore for non-Residue combinations."""
+        # Both sources and dest are non-Residue
+        attention = BiAxialAttention(
+            source_type_1="Peak",
+            source_type_2="Peak",
+            dest_type="Noe",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device
+        )
+
+        self.assertIsInstance(
+            attention.attention_1,
+            AttentionCore,
+            "attention_1 should use AttentionCore for Peak->Noe"
+        )
+        self.assertIsInstance(
+            attention.attention_2,
+            AttentionCore,
+            "attention_2 should use AttentionCore for Peak->Noe"
+        )
+
+    def test_biaxial_residue_dual_attention_output_shape(self):
+        """Test Residue-to-Residue dual-attention produces correct output shape."""
+        data = HeteroData()
+        num_residues = 10
+
+        # Create Residue nodes with features and coordinates
+        data["Residue"].x = torch.randn(num_residues, self.channels, device=self.device)
+        data["Residue"].xyz = torch.randn(num_residues, 3, device=self.device)
+
+        # Create BiAxial attention module (both streams Residue->Residue)
+        attention = BiAxialAttention(
+            source_type_1="Residue",
+            source_type_2="Residue",
+            dest_type="Residue",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device
+        )
+
+        # Create edges for both attention streams
+        edge_index = torch.combinations(
+            torch.arange(num_residues), r=2, with_replacement=True
+        ).t()
+        data[("Residue", "biaxial_attn_1", "Residue")].edge_index = edge_index
+        data[("Residue", "biaxial_attn_2", "Residue")].edge_index = edge_index
+
+        # Forward pass
+        output = attention(data)
+
+        # Check output shape
+        expected_shape = (num_residues, self.channels)
+        self.assertEqual(output["Residue"].x.shape, expected_shape)
+
+        # Verify output is not NaN or Inf
+        self.assertFalse(torch.isnan(output["Residue"].x).any())
+        self.assertFalse(torch.isinf(output["Residue"].x).any())
+
+    def test_biaxial_residue_attention_uses_distance(self):
+        """Test that dual Residue attention output changes with distance."""
+        num_residues = 6
+
+        # Create attention module
+        attention = BiAxialAttention(
+            source_type_1="Residue",
+            source_type_2="Residue",
+            dest_type="Residue",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device
+        )
+
+        # Create two graphs with same features but different coordinates
+        features = torch.randn(num_residues, self.channels, device=self.device)
+
+        # Graph 1: all residues at origin (distance = 0)
+        data1 = HeteroData()
+        data1["Residue"].x = features.clone()
+        data1["Residue"].xyz = torch.zeros(num_residues, 3, device=self.device)
+
+        # Graph 2: residues at different positions
+        data2 = HeteroData()
+        data2["Residue"].x = features.clone()
+        data2["Residue"].xyz = torch.randn(num_residues, 3, device=self.device)
+
+        # Create same edge structure for both
+        edge_index = torch.combinations(
+            torch.arange(num_residues), r=2, with_replacement=True
+        ).t()
+        data1[("Residue", "biaxial_attn_1", "Residue")].edge_index = edge_index
+        data1[("Residue", "biaxial_attn_2", "Residue")].edge_index = edge_index
+        data2[("Residue", "biaxial_attn_1", "Residue")].edge_index = edge_index
+        data2[("Residue", "biaxial_attn_2", "Residue")].edge_index = edge_index
+
+        # Set seed for reproducibility
+        torch.manual_seed(42)
+        attention.reset_parameters()
+
+        # Forward pass on both graphs
+        output1 = attention(data1)
+        output2 = attention(data2)
+
+        # Outputs should differ because distances differ (spatial attention active in both streams)
+        self.assertFalse(
+            torch.allclose(output1["Residue"].x, output2["Residue"].x, rtol=1e-3, atol=1e-5),
+            "BiAxial Residue attention outputs should differ when coordinates differ"
+        )
+
+    def test_biaxial_gradient_flow_through_xyz(self):
+        """Test that gradients flow through xyz coordinates for spatial streams."""
+        data = HeteroData()
+        num_residues = 6
+
+        # Create features and coordinates with gradient tracking
+        features = torch.randn(num_residues, self.channels, device=self.device, requires_grad=True)
+        coordinates = torch.randn(num_residues, 3, device=self.device, requires_grad=True)
+
+        data["Residue"].x = features
+        data["Residue"].xyz = coordinates
+
+        # Create BiAxial attention module
+        attention = BiAxialAttention(
+            source_type_1="Residue",
+            source_type_2="Residue",
+            dest_type="Residue",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device
+        )
+
+        # Create edges
+        edge_index = torch.combinations(
+            torch.arange(num_residues), r=2, with_replacement=True
+        ).t()
+        data[("Residue", "biaxial_attn_1", "Residue")].edge_index = edge_index
+        data[("Residue", "biaxial_attn_2", "Residue")].edge_index = edge_index
+
+        # Forward pass
+        output = attention(data)
+
+        # Compute loss and backward pass
+        loss = output["Residue"].x.sum()
+        loss.backward()
+
+        # Check gradients exist on both features and coordinates
+        self.assertIsNotNone(features.grad, "Gradients should flow through features")
+        self.assertIsNotNone(coordinates.grad, "Gradients should flow through coordinates")
+
+        # Check gradients are non-zero (spatial attention uses coordinates)
+        self.assertTrue(torch.any(features.grad != 0), "Feature gradients should be non-zero")
+        self.assertTrue(torch.any(coordinates.grad != 0), "Coordinate gradients should be non-zero")
+
+    def test_biaxial_backward_compatibility_non_residue(self):
+        """Test that non-Residue dual-attention behavior is unchanged."""
+        data = HeteroData()
+        num_peaks = 8
+        num_noes = 5
+
+        # Create Peak and Noe nodes (no xyz)
+        data["Peak"].x = torch.randn(num_peaks, self.channels, device=self.device)
+        data["Noe"].x = torch.randn(num_noes, self.channels, device=self.device)
+
+        # Create edges (source indices from peaks, dest indices from noes)
+        src_indices_1 = torch.randint(0, num_peaks, (15,), device=self.device)
+        dst_indices_1 = torch.randint(0, num_noes, (15,), device=self.device)
+        edge_index_1 = torch.stack([src_indices_1, dst_indices_1], dim=0)
+
+        src_indices_2 = torch.randint(0, num_peaks, (15,), device=self.device)
+        dst_indices_2 = torch.randint(0, num_noes, (15,), device=self.device)
+        edge_index_2 = torch.stack([src_indices_2, dst_indices_2], dim=0)
+
+        data[("Peak", "biaxial_attn_1", "Noe")].edge_index = edge_index_1
+        data[("Peak", "biaxial_attn_2", "Noe")].edge_index = edge_index_2
+
+        # Create BiAxial attention module
+        attention = BiAxialAttention(
+            source_type_1="Peak",
+            source_type_2="Peak",
+            dest_type="Noe",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device
+        )
+
+        # Should work without xyz coordinates
+        output = attention(data)
+
+        # Check output
+        self.assertEqual(output["Noe"].x.shape, (num_noes, self.channels))
+        self.assertFalse(torch.isnan(output["Noe"].x).any())
+        self.assertFalse(torch.isinf(output["Noe"].x).any())
+
+    def test_biaxial_mixed_spatial_nonspatial(self):
+        """Test mixed scenario: one spatial stream, one non-spatial stream."""
+        data = HeteroData()
+        num_residues = 8
+        num_peaks = 12
+        num_noes = 5
+
+        # Create nodes
+        data["Residue"].x = torch.randn(num_residues, self.channels, device=self.device)
+        data["Residue"].xyz = torch.randn(num_residues, 3, device=self.device)
+        data["Peak"].x = torch.randn(num_peaks, self.channels, device=self.device)
+        data["Noe"].x = torch.randn(num_noes, self.channels, device=self.device)
+
+        # Create BiAxial attention: Residue->Noe (non-spatial) + Peak->Noe (non-spatial)
+        # Note: Even though source is Residue, dest is Noe, so it's non-spatial
+        attention = BiAxialAttention(
+            source_type_1="Residue",
+            source_type_2="Peak",
+            dest_type="Noe",
+            channels=self.channels,
+            head_dim=self.head_dim,
+            heads=self.heads,
+            device=self.device
+        )
+
+        # Both cores should be non-spatial (dest is not Residue)
+        self.assertIsInstance(attention.attention_1, AttentionCore)
+        self.assertIsInstance(attention.attention_2, AttentionCore)
+
+        # Create edges (source indices from respective source types, dest indices from noes)
+        src_indices_1 = torch.randint(0, num_residues, (20,), device=self.device)
+        dst_indices_1 = torch.randint(0, num_noes, (20,), device=self.device)
+        edge_index_1 = torch.stack([src_indices_1, dst_indices_1], dim=0)
+
+        src_indices_2 = torch.randint(0, num_peaks, (20,), device=self.device)
+        dst_indices_2 = torch.randint(0, num_noes, (20,), device=self.device)
+        edge_index_2 = torch.stack([src_indices_2, dst_indices_2], dim=0)
+
+        data[("Residue", "biaxial_attn_1", "Noe")].edge_index = edge_index_1
+        data[("Peak", "biaxial_attn_2", "Noe")].edge_index = edge_index_2
+
+        # Forward pass
+        output = attention(data)
+
+        # Check output
+        self.assertEqual(output["Noe"].x.shape, (num_noes, self.channels))
+        self.assertFalse(torch.isnan(output["Noe"].x).any())
+        self.assertFalse(torch.isinf(output["Noe"].x).any())
 
 
 if __name__ == "__main__":

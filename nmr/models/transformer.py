@@ -628,18 +628,32 @@ class BiAxialAttention(nn.Module):
     from both sources through a learnable MLP before applying a residual update.
 
     Architecture Overview:
-        The module employs two parallel AttentionCore instances:
+        The module employs two parallel attention cores with conditional spatial awareness:
         1. Source 1 attention: aggregates information from source_type_1 nodes to dest_type
         2. Source 2 attention: aggregates information from source_type_2 nodes to dest_type
 
+        Each attention stream independently selects between:
+        - SpatialAttentionCore: When both source and dest are "Residue" (distance-aware)
+        - AttentionCore: For all other node type combinations (feature-only)
+
         These attention outputs are combined with a linear transformation of the destination
         features through a combination MLP, then applied as a residual update.
+
+    Attention Mechanism Selection:
+        - **Residue-to-Residue**: Uses SpatialAttentionCore (distance-aware attention)
+          - Incorporates Euclidean distance between node coordinates (.xyz attribute)
+          - Enables biologically meaningful spatial relationships in protein structures
+        - **All other cases**: Uses AttentionCore (feature-only attention)
+          - Peak-to-Peak, Noe-to-Noe, or any combination with non-Residue types
+          - Standard GATv2 attention without spatial information
 
     Dual Attention Mechanism:
         - Source 1 Attention: Destination nodes query Source 1 nodes using edge_type_1
         - Source 2 Attention: Destination nodes query Source 2 nodes using edge_type_2
 
-        This architecture is general and works with any node type combination.
+        Each stream can independently use spatial or non-spatial attention based on
+        node types. For example, one stream can be Residue->Residue (spatial) while
+        the other is Peak->Residue (non-spatial).
 
     Edge Type Naming Convention:
         Edge types follow the pattern (source_type, edge_name, dest_type):
@@ -735,6 +749,24 @@ class BiAxialAttention(nn.Module):
         ... )
         >>> updated_data = module(data)
 
+    Example - Residue-to-Residue Dual Attention (Spatial):
+        >>> # Both streams use spatial attention for Residue-to-Residue
+        >>> module = BiAxialAttention(
+        ...     source_type_1="Residue",
+        ...     source_type_2="Residue",
+        ...     dest_type="Residue",
+        ...     channels=64,
+        ...     head_dim=16,
+        ...     heads=4,
+        ...     device='cpu'
+        ... )
+        >>> # data["Residue"].xyz must exist with shape [num_residues, 3]
+        >>> updated_data = module(data)
+
+    Requirements:
+        - Residue nodes must have .xyz attribute (3D coordinates) when using spatial attention
+        - All nodes must have .x attribute (feature embeddings)
+
     References:
         This module extends the attention mechanism to handle dual attention
         over any combination of heterogeneous node types.
@@ -811,24 +843,45 @@ class BiAxialAttention(nn.Module):
         self.edge_type_2 = (source_type_2, edge_name_2, dest_type)
 
         # Dual attention cores for both sources
-        # Both cores use the same architecture but operate on different edge types
-        self.attention_1 = AttentionCore(
-            in_channels=channels,
-            out_channels=channels,
-            head_dim=head_dim,
-            heads=heads,
-            negative_slope=negative_slope,
-            device=device,
-        )
+        # Use SpatialAttentionCore when both source and dest are Residue nodes
+        # Otherwise use standard AttentionCore (for Peak, Noe, or mixed-type attention)
+        if source_type_1 == "Residue" and dest_type == "Residue":
+            self.attention_1 = SpatialAttentionCore(
+                in_channels=channels,
+                out_channels=channels,
+                head_dim=head_dim,
+                heads=heads,
+                negative_slope=negative_slope,
+                device=device,
+            )
+        else:
+            self.attention_1 = AttentionCore(
+                in_channels=channels,
+                out_channels=channels,
+                head_dim=head_dim,
+                heads=heads,
+                negative_slope=negative_slope,
+                device=device,
+            )
 
-        self.attention_2 = AttentionCore(
-            in_channels=channels,
-            out_channels=channels,
-            head_dim=head_dim,
-            heads=heads,
-            negative_slope=negative_slope,
-            device=device,
-        )
+        if source_type_2 == "Residue" and dest_type == "Residue":
+            self.attention_2 = SpatialAttentionCore(
+                in_channels=channels,
+                out_channels=channels,
+                head_dim=head_dim,
+                heads=heads,
+                negative_slope=negative_slope,
+                device=device,
+            )
+        else:
+            self.attention_2 = AttentionCore(
+                in_channels=channels,
+                out_channels=channels,
+                head_dim=head_dim,
+                heads=heads,
+                negative_slope=negative_slope,
+                device=device,
+            )
 
         # Destination feature transformation layer
         # Projects destination features to output dimension for combination
@@ -936,12 +989,24 @@ class BiAxialAttention(nn.Module):
         dest_x_norm = self.norm_dest(dest_x)
 
         # Compute attention from first source: source_type_1 (source) -> dest_type (dest)
-        # AttentionCore signature: forward(x_source, x_dest, edge_index)
-        # Note: AttentionCore will apply its own normalization as well
-        delta_1 = self.attention_1(source_x_1_norm, dest_x_norm, edge_index_1)  # [num_dests, channels]
+        # Pass xyz coordinates if using SpatialAttentionCore (Residue-to-Residue attention)
+        if isinstance(self.attention_1, SpatialAttentionCore):
+            xyz_source_1 = data[self.source_type_1].xyz  # [num_src1, 3]
+            xyz_dest = data[self.dest_type].xyz  # [num_dests, 3]
+            delta_1 = self.attention_1(source_x_1_norm, dest_x_norm, xyz_source_1, xyz_dest, edge_index_1)
+        else:
+            delta_1 = self.attention_1(source_x_1_norm, dest_x_norm, edge_index_1)
 
         # Compute attention from second source: source_type_2 (source) -> dest_type (dest)
-        delta_2 = self.attention_2(source_x_2_norm, dest_x_norm, edge_index_2)  # [num_dests, channels]
+        # Pass xyz coordinates if using SpatialAttentionCore (Residue-to-Residue attention)
+        if isinstance(self.attention_2, SpatialAttentionCore):
+            xyz_source_2 = data[self.source_type_2].xyz  # [num_src2, 3]
+            # Reuse xyz_dest if already extracted, otherwise extract it
+            if not isinstance(self.attention_1, SpatialAttentionCore):
+                xyz_dest = data[self.dest_type].xyz  # [num_dests, 3]
+            delta_2 = self.attention_2(source_x_2_norm, dest_x_norm, xyz_source_2, xyz_dest, edge_index_2)
+        else:
+            delta_2 = self.attention_2(source_x_2_norm, dest_x_norm, edge_index_2)
 
         # Transform destination features to output dimension
         dest_transformed = self.dest_linear(dest_x_norm)  # [num_dests, channels]
