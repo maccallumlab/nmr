@@ -94,18 +94,20 @@ class AssignedPeakToResidueMessage(MessagePassing):
         self.shift_dim = embed_dim
         self.feature_dim = embed_dim
 
-        # Build MLP
+        # Pre-normalization layers for inputs (pre-norm pattern)
+        self.norm_peak = nn.LayerNorm(embed_dim).to(device)
+        self.norm_residue = nn.LayerNorm(embed_dim).to(device)
+
+        # Build MLP (no internal LayerNorm - follows pre-norm pattern)
         layers = []
 
         # First hidden layer
         layers.append(nn.Linear(input_size, hidden_size))
-        layers.append(nn.LayerNorm(hidden_size))
         layers.append(nn.ReLU())
 
         # Additional hidden layers
         for _ in range(num_layers - 1):
             layers.append(nn.Linear(hidden_size, hidden_size))
-            layers.append(nn.LayerNorm(hidden_size))
             layers.append(nn.ReLU())
 
         # Output layer
@@ -155,7 +157,7 @@ class AssignedPeakToResidueMessage(MessagePassing):
         """
         Compute messages from peak (source) to residue (target).
 
-        Uses ABSOLUTE embedded features (no shift differences).
+        Uses ABSOLUTE embedded features (no shift differences) with pre-normalization.
 
         Args:
             peak_features_j: Peak features [n_edges, shift_dim + feature_dim] (source)
@@ -164,10 +166,14 @@ class AssignedPeakToResidueMessage(MessagePassing):
         Returns:
             Feature deltas [n_edges, feature_dim] for residues
         """
-        # Concatenate ABSOLUTE features for MLP input (NO shift differences)
+        # Apply pre-normalization to inputs
+        peak_features_norm = self.norm_peak(peak_features_j)
+        residue_features_norm = self.norm_residue(residue_features_i)
+
+        # Concatenate normalized ABSOLUTE features for MLP input
         mlp_input = torch.cat([
-            peak_features_j,      # [n_edges, shift_dim + feature_dim]
-            residue_features_i,   # [n_edges, shift_dim + feature_dim]
+            peak_features_norm,      # [n_edges, shift_dim + feature_dim]
+            residue_features_norm,   # [n_edges, shift_dim + feature_dim]
         ], dim=-1)
 
         # Apply MLP to get feature deltas
@@ -242,18 +248,20 @@ class AssignedResidueToPeakMessage(MessagePassing):
         self.shift_dim = embed_dim
         self.feature_dim = embed_dim
 
-        # Build MLP
+        # Pre-normalization layers for inputs (pre-norm pattern)
+        self.norm_residue = nn.LayerNorm(embed_dim).to(device)
+        self.norm_peak = nn.LayerNorm(embed_dim).to(device)
+
+        # Build MLP (no internal LayerNorm - follows pre-norm pattern)
         layers = []
 
         # First hidden layer
         layers.append(nn.Linear(input_size, hidden_size))
-        layers.append(nn.LayerNorm(hidden_size))
         layers.append(nn.ReLU())
 
         # Additional hidden layers
         for _ in range(num_layers - 1):
             layers.append(nn.Linear(hidden_size, hidden_size))
-            layers.append(nn.LayerNorm(hidden_size))
             layers.append(nn.ReLU())
 
         # Output layer
@@ -301,7 +309,7 @@ class AssignedResidueToPeakMessage(MessagePassing):
         """
         Compute messages from residue (source in reversed flow) to peak (target).
 
-        Uses ABSOLUTE embedded features (no shift differences).
+        Uses ABSOLUTE embedded features (no shift differences) with pre-normalization.
 
         Args:
             residue_features_j: Residue features [n_edges, shift_dim + feature_dim] (source)
@@ -310,10 +318,14 @@ class AssignedResidueToPeakMessage(MessagePassing):
         Returns:
             Feature deltas [n_edges, feature_dim] for peaks
         """
-        # Concatenate ABSOLUTE features for MLP input (NO shift differences)
+        # Apply pre-normalization to inputs
+        residue_features_norm = self.norm_residue(residue_features_j)
+        peak_features_norm = self.norm_peak(peak_features_i)
+
+        # Concatenate normalized ABSOLUTE features for MLP input
         mlp_input = torch.cat([
-            residue_features_j,   # [n_edges, shift_dim + feature_dim]
-            peak_features_i,      # [n_edges, shift_dim + feature_dim]
+            residue_features_norm,   # [n_edges, shift_dim + feature_dim]
+            peak_features_norm,      # [n_edges, shift_dim + feature_dim]
         ], dim=-1)
 
         # Apply MLP to get feature deltas

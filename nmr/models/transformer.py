@@ -123,6 +123,10 @@ class AttentionCore(MessagePassing):
         self.negative_slope = negative_slope
         self.device = device
 
+        # Pre-normalization layers for inputs (pre-norm pattern)
+        self.norm_source = nn.LayerNorm(in_channels, device=device)
+        self.norm_dest = nn.LayerNorm(in_channels, device=device)
+
         # GATv2: Separate linear transformations for destination (target) and source nodes
         self.lin_dest = nn.Linear(in_channels, heads * head_dim, bias=False, device=device)
         self.lin_source = nn.Linear(in_channels, heads * head_dim, bias=False, device=device)
@@ -146,7 +150,7 @@ class AttentionCore(MessagePassing):
 
     def forward(self, x_source: torch.Tensor, x_dest: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         """
-        Apply GATv2 attention to compute feature updates (delta).
+        Apply GATv2 attention to compute feature updates (delta) with pre-normalization.
 
         Args:
             x_source: Source node features [num_source_nodes, in_channels]
@@ -158,9 +162,13 @@ class AttentionCore(MessagePassing):
         """
         H, C = self.heads, self.head_dim
 
+        # Apply pre-normalization to inputs
+        x_source_norm = self.norm_source(x_source)
+        x_dest_norm = self.norm_dest(x_dest)
+
         # Apply linear transformations and reshape for multi-head attention
-        x_dest_transformed = self.lin_dest(x_dest).view(-1, H, C)  # [num_dest_nodes, heads, head_dim]
-        x_source_transformed = self.lin_source(x_source).view(-1, H, C)  # [num_source_nodes, heads, head_dim]
+        x_dest_transformed = self.lin_dest(x_dest_norm).view(-1, H, C)  # [num_dest_nodes, heads, head_dim]
+        x_source_transformed = self.lin_source(x_source_norm).view(-1, H, C)  # [num_source_nodes, heads, head_dim]
 
         # Use PyG message passing to compute attention-weighted aggregation
         # PyG convention: x=(source, dest) tuple → x_j comes from x_source, x_i comes from x_dest
@@ -541,14 +549,18 @@ class BiAxialAttention(nn.Module):
         # Projects destination features to output dimension for combination
         self.dest_linear = nn.Linear(channels, channels, device=device)
 
+        # Pre-normalization layers for inputs (pre-norm pattern)
+        self.norm_source_1 = nn.LayerNorm(channels, device=device)
+        self.norm_source_2 = nn.LayerNorm(channels, device=device)
+        self.norm_dest = nn.LayerNorm(channels, device=device)
+
         # Combination MLP: merges attention outputs with destination features
-        # Architecture: Linear -> LayerNorm -> ReLU -> Linear
+        # Architecture: Linear -> ReLU -> Linear (no internal LayerNorm - pre-norm pattern)
         # Input: delta_1 + delta_2 + dest_transformed = channels * 3
         # Output: channels (for residual application)
         mlp_input_size = channels * 3
         self.combine_mlp = nn.Sequential(
             nn.Linear(mlp_input_size, hidden_size, device=device),
-            nn.LayerNorm(hidden_size, device=device),
             nn.ReLU(),
             nn.Linear(hidden_size, channels, device=device),
         )
@@ -632,15 +644,22 @@ class BiAxialAttention(nn.Module):
         if edge_index_1.size(1) == 0 or edge_index_2.size(1) == 0:
             return data
 
+        # Apply pre-normalization to inputs (pre-norm pattern)
+        # Note: AttentionCore also has its own normalization layers
+        source_x_1_norm = self.norm_source_1(source_x_1)
+        source_x_2_norm = self.norm_source_2(source_x_2)
+        dest_x_norm = self.norm_dest(dest_x)
+
         # Compute attention from first source: source_type_1 (source) -> dest_type (dest)
         # AttentionCore signature: forward(x_source, x_dest, edge_index)
-        delta_1 = self.attention_1(source_x_1, dest_x, edge_index_1)  # [num_dests, channels]
+        # Note: AttentionCore will apply its own normalization as well
+        delta_1 = self.attention_1(source_x_1_norm, dest_x_norm, edge_index_1)  # [num_dests, channels]
 
         # Compute attention from second source: source_type_2 (source) -> dest_type (dest)
-        delta_2 = self.attention_2(source_x_2, dest_x, edge_index_2)  # [num_dests, channels]
+        delta_2 = self.attention_2(source_x_2_norm, dest_x_norm, edge_index_2)  # [num_dests, channels]
 
         # Transform destination features to output dimension
-        dest_transformed = self.dest_linear(dest_x)  # [num_dests, channels]
+        dest_transformed = self.dest_linear(dest_x_norm)  # [num_dests, channels]
 
         # Concatenate all three components for combination MLP
         # Feature combination captures interactions between both source types
@@ -716,6 +735,9 @@ class ResidueSelfAttentionTransformer(MessagePassing):
         self.node_type = "Residue"
         self.edge_type = ("Residue", "self_attn", "Residue")
 
+        # Pre-normalization layer for input (pre-norm pattern)
+        self.norm = nn.LayerNorm(in_channels, device=device)
+
         # GATv2 transformations for destination (target) and source nodes
         self.lin_dest = nn.Linear(
             in_channels, heads * head_dim, bias=False, device=device
@@ -775,9 +797,12 @@ class ResidueSelfAttentionTransformer(MessagePassing):
         if edge_index.size(1) == 0:
             return data
 
+        # Apply pre-normalization to inputs (pre-norm pattern)
+        x_norm = self.norm(x)
+
         # Apply linear transformations and reshape for multi-head attention
-        x_dest = self.lin_dest(x).view(-1, H, C)  # [num_nodes, heads, head_dim]
-        x_source = self.lin_source(x).view(-1, H, C)  # [num_nodes, heads, head_dim]
+        x_dest = self.lin_dest(x_norm).view(-1, H, C)  # [num_nodes, heads, head_dim]
+        x_source = self.lin_source(x_norm).view(-1, H, C)  # [num_nodes, heads, head_dim]
 
         # Use PyG message passing with coordinates
         # PyG will automatically index xyz by edge_index, providing xyz_i and xyz_j in message()

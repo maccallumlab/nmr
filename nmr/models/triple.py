@@ -305,23 +305,25 @@ class ResidueUpdate(nn.Module):
         # Store dimensions for later use
         self.feature_dim = feature_dim
 
-        # Build MLP
+        # Pre-normalization layers for inputs (pre-norm pattern)
+        self.norm_first_features = nn.LayerNorm(feature_dim).to(device)
+        self.norm_second_features = nn.LayerNorm(feature_dim).to(device)
+        self.norm_noe_features = nn.LayerNorm(feature_dim).to(device)
+
+        # Build MLP (no internal LayerNorm - follows pre-norm pattern)
         layers = []
 
         # First hidden layer
         layers.append(nn.Linear(input_size, hidden_size))
-        layers.append(nn.LayerNorm(hidden_size))
         layers.append(nn.ReLU())
 
         # Additional hidden layers
         for _ in range(num_layers - 1):
             layers.append(nn.Linear(hidden_size, hidden_size))
-            layers.append(nn.LayerNorm(hidden_size))
             layers.append(nn.ReLU())
 
         # Output layer
         layers.append(nn.Linear(hidden_size, output_size))
-        layers.append(nn.LayerNorm(output_size))
 
         self.mlp = nn.Sequential(*layers).to(device)
 
@@ -359,14 +361,19 @@ class ResidueUpdate(nn.Module):
         # Calculate relative distance and dist_squared for distance-based attention
         dist_squared = calc_res_distance(first_coords, second_coords)
 
+        # Apply pre-normalization to gathered features
+        first_features_norm = self.norm_first_features(first_features)
+        second_features_norm = self.norm_second_features(second_features)
+        noe_features_norm = self.norm_noe_features(noe_features)
+
         # Concatenate all features for MLP input
-        # Input: dist_squared + 3*feature_dim
+        # Input: dist_squared + 3*feature_dim (normalized features)
         mlp_input = torch.cat(
             [
                 dist_squared,  # [n, 1]
-                first_features,  # [n, feature_dim]
-                second_features,  # [n, feature_dim]
-                noe_features,  # [n, feature_dim]
+                first_features_norm,  # [n, feature_dim]
+                second_features_norm,  # [n, feature_dim]
+                noe_features_norm,  # [n, feature_dim]
             ],
             dim=-1,
         )
@@ -424,23 +431,25 @@ class PeakUpdate(nn.Module):
         # Store dimensions for later use
         self.feature_dim = feature_dim
 
-        # Build MLP
+        # Pre-normalization layers for inputs (pre-norm pattern)
+        self.norm_first_features = nn.LayerNorm(feature_dim).to(device)
+        self.norm_second_features = nn.LayerNorm(feature_dim).to(device)
+        self.norm_noe_features = nn.LayerNorm(feature_dim).to(device)
+
+        # Build MLP (no internal LayerNorm - follows pre-norm pattern)
         layers = []
 
         # First hidden layer
         layers.append(nn.Linear(input_size, hidden_size))
-        layers.append(nn.LayerNorm(hidden_size))
         layers.append(nn.ReLU())
 
         # Additional hidden layers
         for _ in range(num_layers - 1):
             layers.append(nn.Linear(hidden_size, hidden_size))
-            layers.append(nn.LayerNorm(hidden_size))
             layers.append(nn.ReLU())
 
         # Output layer
         layers.append(nn.Linear(hidden_size, output_size))
-        layers.append(nn.LayerNorm(output_size))
 
         self.mlp = nn.Sequential(*layers).to(device)
 
@@ -473,14 +482,18 @@ class PeakUpdate(nn.Module):
                 setattr(data[self.triple_type], key, value)
             return data
 
+        # Apply pre-normalization to gathered features
+        first_features_norm = self.norm_first_features(first_features)
+        second_features_norm = self.norm_second_features(second_features)
+        noe_features_norm = self.norm_noe_features(noe_features)
+
         # Concatenate all features for MLP input (NO distance calculations for peaks)
-        # Input: 3*shift_dim (ABSOLUTE shifts) + 3*feature_dim
-        # NO SHIFT DIFFERENCES - network learns from absolute shift values
+        # Input: 3*feature_dim (normalized features)
         mlp_input = torch.cat(
             [
-                first_features,  # [n, feature_dim]
-                second_features,  # [n, feature_dim]
-                noe_features,  # [n, feature_dim]
+                first_features_norm,  # [n, feature_dim]
+                second_features_norm,  # [n, feature_dim]
+                noe_features_norm,  # [n, feature_dim]
             ],
             dim=-1,
         )

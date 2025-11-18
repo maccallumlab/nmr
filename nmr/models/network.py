@@ -216,36 +216,6 @@ class EmbedFeatures(nn.Module):
         return data
 
 
-class FeatureNorm(nn.Module):
-    """
-    Per-node normalization of .x features using LayerNorm.
-
-    Applied AFTER embeddings, normalizes the working .x features:
-    - Residue.x: [embed_dim] → normalized per node
-    - Peak.x: [embed_dim] → normalized per node
-    - Noe.x: [embed_dim] → normalized per node
-
-    LayerNorm normalizes each node's features independently across the feature
-    dimension, eliminating the need for batching/unbatching operations.
-
-    Each node type has its own LayerNorm with learnable affine parameters (γ, β),
-    allowing different normalization behavior to be learned for each node type.
-    """
-
-    def __init__(self, embed_dim, eps=1e-5):
-        super().__init__()
-        self.residue_norm = nn.LayerNorm(embed_dim, eps=eps)
-        self.peak_norm = nn.LayerNorm(embed_dim, eps=eps)
-        self.noe_norm = nn.LayerNorm(embed_dim, eps=eps)
-
-    def forward(self, data):
-        """Normalize each node type's features independently."""
-        data["Residue"].x = self.residue_norm(data["Residue"].x)
-        data["Peak"].x = self.peak_norm(data["Peak"].x)
-        data["Noe"].x = self.noe_norm(data["Noe"].x)
-        return data
-
-
 class NMRNet(nn.Module):
     """
     Complete NMR GNN model combining message passing with prediction heads.
@@ -253,8 +223,8 @@ class NMRNet(nn.Module):
     Stacks NMRLayer(s) for graph message passing, then uses ValueCalc and
     PolicyCalc heads to predict state value and action probabilities.
 
-    Applies FeatureNorm after each layer to ensure consistent normalization
-    of .x features across all node types.
+    Pre-normalization is now handled within each message passing component,
+    ensuring gradients flow through clean residual paths.
     """
 
     def __init__(self, device, config: ModelConfig):
@@ -268,11 +238,10 @@ class NMRNet(nn.Module):
 
         self.embed_features = EmbedFeatures(device, config)
 
-        # Build sequential stack: [NMRLayer, FeatureNorm, NMRLayer, FeatureNorm, ...]
+        # Build sequential stack of NMRLayers (no post-normalization)
         layers = []
         for _ in range(config.num_nmr_layers):
             layers.append(NMRLayer(device, config))
-            layers.append(FeatureNorm(config.embed.embed_dim))
 
         self.nmr = nn.Sequential(*layers)
 
