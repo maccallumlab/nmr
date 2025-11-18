@@ -66,11 +66,11 @@ class TestCompleteIntegration(unittest.TestCase):
 
         # Generate a small test dataset
         generator = FakeDataGenerator(self.num_resid)
-        coords, obs_shifts, pred_shifts, noes, connectivity = generator.generate_data_arrays(
-            random_key=False
+        coords, obs_shifts, pred_shifts, noes, connectivity = (
+            generator.generate_data_arrays(random_key=False)
         )
-        self.pred_coords, self.obs_shifts, self.noes, self.connectivity = generator.order_data(
-            coords, obs_shifts, pred_shifts, noes, connectivity
+        self.pred_coords, self.obs_shifts, self.noes, self.connectivity = (
+            generator.order_data(coords, obs_shifts, pred_shifts, noes, connectivity)
         )
 
         # Create environment and initial state
@@ -150,8 +150,11 @@ class TestCompleteIntegration(unittest.TestCase):
         # Verify old triple edge naming is NOT present (exclude VALUE edges)
         old_edge_names = ["NH1_extract", "NH2_extract", "NH1_add", "NH2_add"]
         for edge_type in edge_types:
-            self.assertNotIn(edge_type[1], old_edge_names,
-                           f"Old edge naming '{edge_type[1]}' still present")
+            self.assertNotIn(
+                edge_type[1],
+                old_edge_names,
+                f"Old edge naming '{edge_type[1]}' still present",
+            )
 
     def test_all_four_triple_types_process_correctly(self):
         """Test that all 4 triple types process correctly in sequence."""
@@ -182,8 +185,10 @@ class TestCompleteIntegration(unittest.TestCase):
         noe_changed = not torch.allclose(data["Noe"].x, original_noe_x)
 
         # At least one node type should have changed
-        self.assertTrue(residue_changed or peak_changed or noe_changed,
-                       "No node features changed after layer forward pass")
+        self.assertTrue(
+            residue_changed or peak_changed or noe_changed,
+            "No node features changed after layer forward pass",
+        )
 
         # Verify outputs are finite
         self.assertTrue(torch.isfinite(data["Residue"].x).all())
@@ -211,17 +216,19 @@ class TestCompleteIntegration(unittest.TestCase):
         num_nonzero_grads = 0
         for name, param in net.named_parameters():
             if param.requires_grad:
-                self.assertIsNotNone(param.grad,
-                                   f"No gradient for parameter {name}")
+                self.assertIsNotNone(param.grad, f"No gradient for parameter {name}")
 
                 # Verify gradients are finite (not NaN/inf)
-                self.assertTrue(torch.isfinite(param.grad).all(),
-                              f"Non-finite gradients in parameter {name}")
+                self.assertTrue(
+                    torch.isfinite(param.grad).all(),
+                    f"Non-finite gradients in parameter {name}",
+                )
 
                 # Verify gradients have reasonable magnitudes
                 grad_norm = param.grad.norm().item()
-                self.assertLess(grad_norm, 1e6,
-                              f"Gradient norm too large for {name}: {grad_norm}")
+                self.assertLess(
+                    grad_norm, 1e6, f"Gradient norm too large for {name}: {grad_norm}"
+                )
 
                 # Count non-zero gradients (zero gradients are OK with ReLU)
                 if grad_norm > 0.0:
@@ -229,89 +236,14 @@ class TestCompleteIntegration(unittest.TestCase):
 
         # Verify that at least some gradients are non-zero (not all dead)
         total_params = sum(1 for p in net.parameters() if p.requires_grad)
-        self.assertGreater(num_nonzero_grads, 0,
-                         "All gradients are zero - no gradient flow detected")
-        self.assertGreater(num_nonzero_grads, total_params * 0.5,
-                         f"Too many zero gradients: {num_nonzero_grads}/{total_params}")
-
-    def test_equivariance_of_residue_residue_noe_triple(self):
-        """Test equivariance of ResidueResidueNoeTriple coordinate updates."""
-        # Construct graph
-        data1 = construct_graph(self.state, self.device, self.config)
-
-        # Embed features before calling NMRLayer
-        # Coordinates are already normalized during graph construction
-        config = ModelConfig()
-        embed = EmbedFeatures(self.device, config)
-        data1 = embed(data1)
-
-        # Store original coordinates
-        original_coords = data1["Residue"].x[:, 0:3].clone()
-
-        # Run forward pass and capture coordinate updates
-        layer = NMRLayer(self.device, config)
-        data1 = layer(data1)
-        updated_coords1 = data1["Residue"].x[:, 0:3]
-        coord_delta1 = updated_coords1 - original_coords
-
-        # Create a rotation matrix (90 degrees around z-axis)
-        theta = np.pi / 2
-        rotation_matrix = torch.tensor([
-            [np.cos(theta), -np.sin(theta), 0],
-            [np.sin(theta), np.cos(theta), 0],
-            [0, 0, 1]
-        ], dtype=torch.float32, device=self.device)
-
-        # Create a translation vector
-        translation = torch.tensor([1.0, 2.0, 3.0], device=self.device)
-
-        # Apply rotation and translation to input coordinates
-        rotated_coords = torch.matmul(original_coords, rotation_matrix.T)
-        transformed_coords = rotated_coords + translation
-
-        # Create new state with transformed coordinates
-        state2 = copy.deepcopy(self.state)
-
-        # Update coordinates in state2 - need to preserve all values [x, y, z, shifts...]
-        # transformed_coords only has [x, y, z], so we need to append the shifts
-        original_full_coords = torch.tensor(self.state["coordinates"], dtype=torch.float32, device=self.device)
-        shifts = original_full_coords[:, 3:]  # Extract all shift values
-        full_transformed_coords = torch.cat([transformed_coords, shifts], dim=-1)
-        state2["coordinates"] = full_transformed_coords.tolist()
-
-        # Construct graph with transformed coordinates
-        data2 = construct_graph(state2, self.device, self.config)
-
-        # Embed features for data2
-        # Coordinates are already normalized during graph construction
-        data2 = embed(data2)
-
-        # Run forward pass again
-        layer2 = NMRLayer(self.device, config)
-        # Copy weights from first layer to ensure same transformation
-        layer2.load_state_dict(layer.state_dict())
-
-        data2 = layer2(data2)
-        updated_coords2 = data2["Residue"].x[:, 0:3]
-        coord_delta2 = updated_coords2 - transformed_coords
-
-        # Verify coordinate deltas transform correctly (rotation only, not translation)
-        expected_delta2 = torch.matmul(coord_delta1, rotation_matrix.T)
-
-        # Allow some numerical tolerance
-        self.assertTrue(torch.allclose(coord_delta2, expected_delta2, atol=1e-4),
-                       "Coordinate deltas did not transform equivariantly")
-
-        # Verify shift and feature updates are invariant
-        shifts1 = data1["Residue"].x[:, 3:]
-        shifts2 = data2["Residue"].x[:, 3:]
-
-        # Shifts should be similar (invariant to coordinate transformation)
-        # Note: They may not be exactly equal due to coordinate-dependent updates
-        # but should be in the same ballpark
-        shift_diff = (shifts1 - shifts2).abs().max().item()
-        self.assertLess(shift_diff, 1.0,
-                       f"Shift updates changed significantly: {shift_diff}")
+        self.assertGreater(
+            num_nonzero_grads, 0, "All gradients are zero - no gradient flow detected"
+        )
+        self.assertGreater(
+            num_nonzero_grads,
+            total_params * 0.5,
+            f"Too many zero gradients: {num_nonzero_grads}/{total_params}",
+        )
 
     def test_peak_based_triples_produce_zero_coordinate_deltas(self):
         """Test that Peak-based triples produce zero coordinate deltas."""
@@ -324,12 +256,12 @@ class TestCompleteIntegration(unittest.TestCase):
         embed = EmbedFeatures(self.device, config)
         data = embed(data)
 
-        # Store original Residue coordinates
-        original_residue_coords = data["Residue"].x[:, 0:3].clone()
+        # Store original Residue coordinates (from .xyz, not .x)
+        original_residue_coords = data["Residue"].xyz.clone()
 
         # Create network and isolate the Peak-based triples
-        # We'll test by running the full layer and checking that coordinate
-        # updates come only from ResidueResidueNoeTriple
+        # We'll test by running the full layer and checking that coordinates
+        # in .xyz never change (coordinate updates have been removed)
         layer = NMRLayer(self.device, config)
 
         # Manually call each triple and check coordinate changes
@@ -339,29 +271,33 @@ class TestCompleteIntegration(unittest.TestCase):
         data1 = construct_graph(self.state, self.device, self.config)
         data1 = embed(data1)
         data1 = layer.residue_residue_noe(data1)
-        coords_after_res_res = data1["Residue"].x[:, 0:3]
+        coords_after_res_res = data1["Residue"].xyz
 
-        # Check if coordinates changed (they should for ResidueResidueNoeTriple)
-        torch.allclose(coords_after_res_res, original_residue_coords, atol=1e-6)
+        # Verify coordinates did NOT change (coordinate updates removed)
+        self.assertTrue(
+            torch.allclose(coords_after_res_res, original_residue_coords, atol=1e-6),
+            "ResidueResidueNoeTriple should not change .xyz (coordinate updates removed)"
+        )
 
         # Now test each Peak-based triple
         for triple_name, triple_module in [
             ("ResiduePeakNoeTriple", layer.residue_peak_noe),
             ("PeakResidueNoeTriple", layer.peak_residue_noe),
-            ("PeakPeakNoeTriple", layer.peak_peak_noe)
+            ("PeakPeakNoeTriple", layer.peak_peak_noe),
         ]:
             data_peak = construct_graph(self.state, self.device, self.config)
             data_peak = embed(data_peak)
-            coords_before = data_peak["Residue"].x[:, 0:3].clone()
+            coords_before = data_peak["Residue"].xyz.clone()
 
             # Run the Peak-based triple
             data_peak = triple_module(data_peak)
-            coords_after = data_peak["Residue"].x[:, 0:3]
+            coords_after = data_peak["Residue"].xyz
 
             # Verify coordinates did NOT change (or changed by at most numerical error)
             coord_delta = (coords_after - coords_before).abs().max().item()
-            self.assertLess(coord_delta, 1e-5,
-                          f"{triple_name} changed coordinates by {coord_delta}")
+            self.assertLess(
+                coord_delta, 1e-5, f"{triple_name} changed .xyz by {coord_delta}"
+            )
 
     def test_batch_processing_with_multiple_graphs(self):
         """Test batch processing with multiple graphs."""
@@ -371,8 +307,8 @@ class TestCompleteIntegration(unittest.TestCase):
             # Use different random states for variety
             np.random.seed(i)
             generator = FakeDataGenerator(self.num_resid)
-            coords, obs_shifts, pred_shifts, noes, connectivity = generator.generate_data_arrays(
-                random_key=False
+            coords, obs_shifts, pred_shifts, noes, connectivity = (
+                generator.generate_data_arrays(random_key=False)
             )
             coords, obs_shifts, noes, connectivity = generator.order_data(
                 coords, obs_shifts, pred_shifts, noes, connectivity
@@ -420,8 +356,8 @@ class TestCompleteIntegration(unittest.TestCase):
         # Test: Small graph (minimum viable size)
         # Use 3 residues to ensure we get some NOEs
         generator_small = FakeDataGenerator(num_resid=3)
-        coords, obs_shifts, pred_shifts, noes, connectivity = generator_small.generate_data_arrays(
-            random_key=False
+        coords, obs_shifts, pred_shifts, noes, connectivity = (
+            generator_small.generate_data_arrays(random_key=False)
         )
         coords, obs_shifts, noes, connectivity = generator_small.order_data(
             coords, obs_shifts, pred_shifts, noes, connectivity
@@ -454,8 +390,12 @@ class TestCompleteIntegration(unittest.TestCase):
             self.fail(f"Forward pass failed on small graph: {e}")
 
         # Count triple nodes in small graph
-        for triple_type in ["ResidueResidueNoeTriple", "ResiduePeakNoeTriple",
-                           "PeakResidueNoeTriple", "PeakPeakNoeTriple"]:
+        for triple_type in [
+            "ResidueResidueNoeTriple",
+            "ResiduePeakNoeTriple",
+            "PeakResidueNoeTriple",
+            "PeakPeakNoeTriple",
+        ]:
             if triple_type in data_small.node_types:
                 num_triples = data_small[triple_type].x.size(0)
                 # Even if some types have zero instances, forward pass should work
@@ -473,8 +413,8 @@ class TestCoordinateUpdateComparison(unittest.TestCase):
 
         # Generate test dataset
         generator = FakeDataGenerator(self.num_resid)
-        coords, obs_shifts, pred_shifts, noes, connectivity = generator.generate_data_arrays(
-            random_key=False
+        coords, obs_shifts, pred_shifts, noes, connectivity = (
+            generator.generate_data_arrays(random_key=False)
         )
         coords, obs_shifts, noes, connectivity = generator.order_data(
             coords, obs_shifts, pred_shifts, noes, connectivity
@@ -486,7 +426,7 @@ class TestCoordinateUpdateComparison(unittest.TestCase):
         self.state = create_state_dict_from_env(env_state)
 
     def test_coordinate_update_comparison(self):
-        """Verify only ResidueResidueNoeTriple updates coordinates."""
+        """Verify no triple types update coordinates (coordinate updates removed)."""
         config = ModelConfig()
         layer = NMRLayer(self.device, config)
         embed = EmbedFeatures(self.device, config)
@@ -495,63 +435,80 @@ class TestCoordinateUpdateComparison(unittest.TestCase):
         # Coordinates are already normalized during graph construction
         data_res_res = construct_graph(self.state, self.device, self.config)
         data_res_res = embed(data_res_res)
-        original_coords = data_res_res["Residue"].x[:, 0:3].clone()
+        original_coords = data_res_res["Residue"].xyz.clone()
 
         data_res_res = layer.residue_residue_noe(data_res_res)
-        updated_coords = data_res_res["Residue"].x[:, 0:3]
+        updated_coords = data_res_res["Residue"].xyz
 
-        # ResidueResidueNoeTriple SHOULD update coordinates
-        # (implementation-dependent if updates are actually non-zero)
+        # ResidueResidueNoeTriple should NOT update coordinates (updates removed)
+        self.assertTrue(
+            torch.allclose(original_coords, updated_coords, atol=1e-6),
+            "ResidueResidueNoeTriple should not update .xyz (coordinate updates removed)",
+        )
 
         # Test ResiduePeakNoeTriple
         data_res_peak = construct_graph(self.state, self.device, self.config)
         data_res_peak = embed(data_res_peak)
-        coords_before = data_res_peak["Residue"].x[:, 0:3].clone()
+        coords_before = data_res_peak["Residue"].xyz.clone()
         data_res_peak = layer.residue_peak_noe(data_res_peak)
-        coords_after = data_res_peak["Residue"].x[:, 0:3]
+        coords_after = data_res_peak["Residue"].xyz
 
         # ResiduePeakNoeTriple should NOT update coordinates
-        self.assertTrue(torch.allclose(coords_before, coords_after, atol=1e-6),
-                       "ResiduePeakNoeTriple should not update coordinates")
+        self.assertTrue(
+            torch.allclose(coords_before, coords_after, atol=1e-6),
+            "ResiduePeakNoeTriple should not update .xyz",
+        )
 
         # Test PeakResidueNoeTriple
         data_peak_res = construct_graph(self.state, self.device, self.config)
         data_peak_res = embed(data_peak_res)
-        coords_before = data_peak_res["Residue"].x[:, 0:3].clone()
+        coords_before = data_peak_res["Residue"].xyz.clone()
         data_peak_res = layer.peak_residue_noe(data_peak_res)
-        coords_after = data_peak_res["Residue"].x[:, 0:3]
+        coords_after = data_peak_res["Residue"].xyz
 
         # PeakResidueNoeTriple should NOT update coordinates
-        self.assertTrue(torch.allclose(coords_before, coords_after, atol=1e-6),
-                       "PeakResidueNoeTriple should not update coordinates")
+        self.assertTrue(
+            torch.allclose(coords_before, coords_after, atol=1e-6),
+            "PeakResidueNoeTriple should not update .xyz",
+        )
 
         # Test PeakPeakNoeTriple
         data_peak_peak = construct_graph(self.state, self.device, self.config)
         data_peak_peak = embed(data_peak_peak)
-        coords_before = data_peak_peak["Residue"].x[:, 0:3].clone()
+        coords_before = data_peak_peak["Residue"].xyz.clone()
         data_peak_peak = layer.peak_peak_noe(data_peak_peak)
-        coords_after = data_peak_peak["Residue"].x[:, 0:3]
+        coords_after = data_peak_peak["Residue"].xyz
 
         # PeakPeakNoeTriple should NOT update coordinates
-        self.assertTrue(torch.allclose(coords_before, coords_after, atol=1e-6),
-                       "PeakPeakNoeTriple should not update coordinates")
+        self.assertTrue(
+            torch.allclose(coords_before, coords_after, atol=1e-6),
+            "PeakPeakNoeTriple should not update .xyz",
+        )
 
-        # Verify all types update shifts and features
+        # Verify all types update embedded features (.x) but not raw data
         for triple_name, data_obj in [
             ("ResidueResidueNoeTriple", data_res_res),
             ("ResiduePeakNoeTriple", data_res_peak),
             ("PeakResidueNoeTriple", data_peak_res),
-            ("PeakPeakNoeTriple", data_peak_peak)
+            ("PeakPeakNoeTriple", data_peak_peak),
         ]:
-            # Just verify that shifts and features exist and are finite
-            self.assertTrue(torch.isfinite(data_obj["Residue"].x[:, 3:]).all(),
-                          f"{triple_name}: Residue shifts are not finite")
-            self.assertTrue(torch.isfinite(data_obj["Residue"].f).all(),
-                          f"{triple_name}: Residue features are not finite")
-            self.assertTrue(torch.isfinite(data_obj["Peak"].x).all(),
-                          f"{triple_name}: Peak shifts are not finite")
-            self.assertTrue(torch.isfinite(data_obj["Peak"].f).all(),
-                          f"{triple_name}: Peak features are not finite")
+            # Just verify that embedded features and flags exist and are finite
+            self.assertTrue(
+                torch.isfinite(data_obj["Residue"].x).all(),
+                f"{triple_name}: Residue.x features are not finite",
+            )
+            self.assertTrue(
+                torch.isfinite(data_obj["Residue"].flags).all(),
+                f"{triple_name}: Residue.flags are not finite",
+            )
+            self.assertTrue(
+                torch.isfinite(data_obj["Peak"].x).all(),
+                f"{triple_name}: Peak.x features are not finite",
+            )
+            self.assertTrue(
+                torch.isfinite(data_obj["Peak"].flags).all(),
+                f"{triple_name}: Peak.flags are not finite",
+            )
 
 
 if __name__ == "__main__":

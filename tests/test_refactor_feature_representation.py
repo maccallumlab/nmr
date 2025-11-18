@@ -17,7 +17,7 @@ from torch_geometric.data import HeteroData
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from nmr.construct import construct_graph
-from nmr.models.network import ModelConfig, NMRNet, FeatureNorm
+from nmr.models.network import ModelConfig, NMRNet
 from torch_geometric.data import Batch
 
 
@@ -173,9 +173,10 @@ class TestRefactoredAttributeStructure(unittest.TestCase):
         self.assertTrue(hasattr(data['Noe'], 'x'))
 
         # Check that .x has been updated (shape should match embed_dim)
-        # Residue.x should be [n, 3 + embed_dim] (coords + embedded features)
+        # Residue.x should be [n, embed_dim] (embedded features only)
         self.assertEqual(data['Residue'].x.ndim, 2)
         self.assertEqual(data['Residue'].x.shape[0], 2)
+        self.assertEqual(data['Residue'].x.shape[1], self.config.embed.embed_dim)
 
         # Peak.x should be [n, embed_dim]
         self.assertEqual(data['Peak'].x.ndim, 2)
@@ -247,213 +248,6 @@ class TestRefactoredAttributeStructure(unittest.TestCase):
             print(f"Gradient flow error: {e}")
 
         self.assertTrue(gradient_flow_ok)
-
-
-class TestFeatureNormLayerNorm(unittest.TestCase):
-    """Test the LayerNorm-based FeatureNorm implementation."""
-
-    def setUp(self):
-        """Create test data structures."""
-        self.device = torch.device('cpu')
-        self.config = ModelConfig()
-        self.embed_dim = self.config.embed.embed_dim
-        self.feature_norm = FeatureNorm(self.embed_dim)
-
-    def test_feature_norm_has_separate_layer_norms(self):
-        """Test that FeatureNorm has separate LayerNorm for each node type."""
-        self.assertTrue(hasattr(self.feature_norm, 'residue_norm'))
-        self.assertTrue(hasattr(self.feature_norm, 'peak_norm'))
-        self.assertTrue(hasattr(self.feature_norm, 'noe_norm'))
-
-        # Check they are LayerNorm instances
-        self.assertIsInstance(self.feature_norm.residue_norm, torch.nn.LayerNorm)
-        self.assertIsInstance(self.feature_norm.peak_norm, torch.nn.LayerNorm)
-        self.assertIsInstance(self.feature_norm.noe_norm, torch.nn.LayerNorm)
-
-    def test_feature_norm_has_learnable_parameters(self):
-        """Test that LayerNorm has learnable affine parameters (γ, β)."""
-        # Each LayerNorm should have weight (γ) and bias (β) parameters
-        params = dict(self.feature_norm.named_parameters())
-
-        # Check residue_norm parameters
-        self.assertIn('residue_norm.weight', params)
-        self.assertIn('residue_norm.bias', params)
-        self.assertEqual(params['residue_norm.weight'].shape, (self.embed_dim,))
-        self.assertEqual(params['residue_norm.bias'].shape, (self.embed_dim,))
-
-        # Check peak_norm parameters
-        self.assertIn('peak_norm.weight', params)
-        self.assertIn('peak_norm.bias', params)
-
-        # Check noe_norm parameters
-        self.assertIn('noe_norm.weight', params)
-        self.assertIn('noe_norm.bias', params)
-
-    def test_feature_norm_normalizes_per_node(self):
-        """Test that FeatureNorm normalizes each node independently across features."""
-        # Create a FeatureNorm without affine parameters for simpler testing
-        feature_norm_no_affine = FeatureNorm(self.embed_dim)
-        # Set elementwise_affine to False after creation to test pure normalization
-        # (LayerNorm with affine=True applies: γ * normalized + β, which changes statistics)
-        # For this test, we want to verify the normalization itself works
-
-        # Create a simple heterogeneous graph
-        data = HeteroData()
-
-        # Create features with random values (not all zeros to avoid division issues)
-        torch.manual_seed(42)
-        data['Residue'].x = torch.randn(3, self.embed_dim)
-        data['Peak'].x = torch.randn(2, self.embed_dim)
-        data['Noe'].x = torch.randn(1, self.embed_dim)
-
-        # Store original features
-        orig_residue = data['Residue'].x.clone()
-        orig_peak = data['Peak'].x.clone()
-        orig_noe = data['Noe'].x.clone()
-
-        # Apply FeatureNorm
-        normalized_data = feature_norm_no_affine(data)
-
-        # After LayerNorm with affine parameters, the mean and std won't be exactly 0 and 1
-        # But the normalization should still occur - verify features changed
-        self.assertFalse(torch.allclose(normalized_data['Residue'].x, orig_residue))
-        self.assertFalse(torch.allclose(normalized_data['Peak'].x, orig_peak))
-        self.assertFalse(torch.allclose(normalized_data['Noe'].x, orig_noe))
-
-        # Verify shape is preserved
-        self.assertEqual(normalized_data['Residue'].x.shape, (3, self.embed_dim))
-        self.assertEqual(normalized_data['Peak'].x.shape, (2, self.embed_dim))
-        self.assertEqual(normalized_data['Noe'].x.shape, (1, self.embed_dim))
-
-    def test_feature_norm_works_with_batched_data(self):
-        """Test that FeatureNorm works directly with batched graphs (no unbatching)."""
-        # Create two separate graphs
-        data1 = HeteroData()
-        data1['Residue'].x = torch.randn(2, self.embed_dim)
-        data1['Peak'].x = torch.randn(3, self.embed_dim)
-        data1['Noe'].x = torch.randn(1, self.embed_dim)
-
-        data2 = HeteroData()
-        data2['Residue'].x = torch.randn(3, self.embed_dim)
-        data2['Peak'].x = torch.randn(2, self.embed_dim)
-        data2['Noe'].x = torch.randn(2, self.embed_dim)
-
-        # Batch the graphs
-        batched_data = Batch.from_data_list([data1, data2])
-
-        # Apply FeatureNorm - should work without unbatching
-        try:
-            normalized_batched = self.feature_norm(batched_data)
-            batching_works = True
-        except Exception as e:
-            batching_works = False
-            print(f"Error with batched data: {e}")
-
-        self.assertTrue(batching_works)
-
-        # Verify that all nodes are normalized (each node independently)
-        # Total nodes: 5 residues (2+3), 5 peaks (3+2), 3 noes (1+2)
-        self.assertEqual(normalized_batched['Residue'].x.shape[0], 5)
-        self.assertEqual(normalized_batched['Peak'].x.shape[0], 5)
-        self.assertEqual(normalized_batched['Noe'].x.shape[0], 3)
-
-    def test_feature_norm_gradient_flow(self):
-        """Test that gradients flow through FeatureNorm correctly."""
-        # Create simple data - store as parameters to track gradients properly
-        residue_x = torch.nn.Parameter(torch.randn(2, self.embed_dim))
-        peak_x = torch.nn.Parameter(torch.randn(2, self.embed_dim))
-        noe_x = torch.nn.Parameter(torch.randn(1, self.embed_dim))
-
-        data = HeteroData()
-        data['Residue'].x = residue_x
-        data['Peak'].x = peak_x
-        data['Noe'].x = noe_x
-
-        # Apply FeatureNorm
-        normalized_data = self.feature_norm(data)
-
-        # Compute a loss
-        loss = normalized_data['Residue'].x.sum() + \
-               normalized_data['Peak'].x.sum() + \
-               normalized_data['Noe'].x.sum()
-
-        # Backward pass
-        try:
-            loss.backward()
-            gradient_flow_ok = True
-        except RuntimeError as e:
-            gradient_flow_ok = False
-            print(f"Gradient flow error: {e}")
-
-        self.assertTrue(gradient_flow_ok)
-
-        # Check that input parameters received gradients
-        self.assertIsNotNone(residue_x.grad)
-        self.assertIsNotNone(peak_x.grad)
-        self.assertIsNotNone(noe_x.grad)
-
-    def test_feature_norm_in_nmrnet(self):
-        """Test that FeatureNorm integrates correctly into NMRNet."""
-        config = ModelConfig(num_nmr_layers=2)
-        model = NMRNet(self.device, config)
-
-        # Create a test state
-        state = {
-            'coordinates': [
-                [1.0, 2.0, 3.0, 8.0, 120.0],
-                [4.0, 5.0, 6.0, 8.5, 125.0],
-            ],
-            'obs_chemical_shifts': [
-                [8.1, 121.0],
-                [8.6, 126.0],
-            ],
-            'noes': [
-                [120.0, 8.0, 8.5],
-            ],
-            'assignments': {},
-            'shift_to_assign': 0,
-        }
-
-        # Construct graph
-        data = construct_graph(state, self.device, config)
-
-        # Run forward pass
-        try:
-            value, policy = model(data)
-            integration_ok = True
-        except Exception as e:
-            integration_ok = False
-            print(f"Integration error: {e}")
-
-        self.assertTrue(integration_ok)
-
-    def test_separate_layer_norms_learn_independently(self):
-        """Test that separate LayerNorms can learn different parameters."""
-        # After initialization, the weights should be the same (all ones)
-        # But they should be separate parameters that can diverge during training
-
-        residue_weight = self.feature_norm.residue_norm.weight
-        peak_weight = self.feature_norm.peak_norm.weight
-        noe_weight = self.feature_norm.noe_norm.weight
-
-        # Initially all should be ones (default initialization)
-        self.assertTrue(torch.allclose(residue_weight, torch.ones_like(residue_weight)))
-        self.assertTrue(torch.allclose(peak_weight, torch.ones_like(peak_weight)))
-        self.assertTrue(torch.allclose(noe_weight, torch.ones_like(noe_weight)))
-
-        # But they should be different parameter objects
-        self.assertIsNot(residue_weight, peak_weight)
-        self.assertIsNot(peak_weight, noe_weight)
-        self.assertIsNot(residue_weight, noe_weight)
-
-        # Verify they can be updated independently
-        with torch.no_grad():
-            self.feature_norm.residue_norm.weight[0] = 2.0
-
-        # Only residue_norm should be affected
-        self.assertEqual(self.feature_norm.residue_norm.weight[0].item(), 2.0)
-        self.assertEqual(self.feature_norm.peak_norm.weight[0].item(), 1.0)
-        self.assertEqual(self.feature_norm.noe_norm.weight[0].item(), 1.0)
 
 
 if __name__ == '__main__':
