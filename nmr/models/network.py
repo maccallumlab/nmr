@@ -19,7 +19,7 @@ from .triple import (
     ResiduePeakNoeTriple,
     ResidueResidueNoeTriple,
 )
-from .transformer import AttentionConfig
+from .transformer import AttentionConfig, BiAxialAttention, MonoAxialAttention
 
 
 @dataclass
@@ -94,6 +94,153 @@ class NMRLayer(nn.Module):
         data = self.residue_peak_noe(data)
         data = self.peak_residue_noe(data)
         data = self.peak_peak_noe(data)
+        return data
+
+
+class NMRTransformerLayer(nn.Module):
+    """
+    Single layer of transformer-based NMR message passing.
+
+    Uses attention mechanisms instead of triple nodes to enable information flow between
+    Residue, Peak, and NOE nodes. This provides an alternative to the triple-based
+    architecture with potentially better scalability.
+
+    Architecture:
+    1. AssignedPair: Bidirectional updates between assigned Peak-Residue pairs
+    2. Residue ← (Residue, Peak): BiAxial attention updating Residues
+    3. Peak ← (Peak, Residue): BiAxial attention updating Peaks
+    4. NOE ← (Residue, Peak): BiAxial attention updating NOEs
+    5. Residue ← NOE: MonoAxial attention from NOEs to Residues
+    6. Peak ← NOE: MonoAxial attention from NOEs to Peaks
+
+    Attention Mechanisms:
+    - BiAxialAttention: Combines information from two source types via dual attention streams
+    - MonoAxialAttention: Single attention stream (self or cross-attention)
+    - SpatialAttentionCore: Used for Residue-to-Residue (distance-aware)
+    - AttentionCore: Used for all other combinations (feature-only GATv2)
+
+    Edge Requirements:
+    - ("Residue", "res_res_attn", "Residue") - Residue self-attention
+    - ("Peak", "peak_res_attn", "Residue") - Peak→Residue cross-attention
+    - ("Peak", "peak_peak_attn", "Peak") - Peak self-attention
+    - ("Residue", "res_peak_attn", "Peak") - Residue→Peak cross-attention
+    - ("Residue", "res_noe_attn", "Noe") - Residue→NOE cross-attention
+    - ("Peak", "peak_noe_attn", "Noe") - Peak→NOE cross-attention
+    - ("Noe", "noe_res_attn", "Residue") - NOE→Residue cross-attention
+    - ("Noe", "noe_peak_attn", "Peak") - NOE→Peak cross-attention
+
+    Configuration:
+    - config.embed.embed_dim: Embedding dimension for all node features
+    - config.attention.num_heads: Number of attention heads
+    - config.attention.attention_dim: Dimension per attention head
+    - config.mlp: MLP configuration for AssignedPair
+    """
+
+    def __init__(self, device, config: ModelConfig):
+        """
+        Initialize NMRTransformerLayer with attention mechanisms.
+
+        Args:
+            device: torch device (CPU or CUDA)
+            config: ModelConfig containing embed, attention, and mlp configurations
+        """
+        super(NMRTransformerLayer, self).__init__()
+
+        # Extract configuration
+        embed_dim = config.embed.embed_dim
+        num_heads = config.attention.num_heads
+        head_dim = config.attention.attention_dim
+
+        # 1. Assigned pair processing (same as triple-based)
+        self.assigned_pair = AssignedPair(device, config)
+
+        # 2. Residue ← (Residue, Peak): BiAxial attention
+        self.residue_from_residue_peak = BiAxialAttention(
+            source_type_1="Residue",
+            source_type_2="Peak",
+            dest_type="Residue",
+            channels=embed_dim,
+            head_dim=head_dim,
+            heads=num_heads,
+            edge_name_1="res_res_attn",
+            edge_name_2="peak_res_attn",
+            device=device,
+        )
+
+        # 3. Peak ← (Peak, Residue): BiAxial attention
+        self.peak_from_peak_residue = BiAxialAttention(
+            source_type_1="Peak",
+            source_type_2="Residue",
+            dest_type="Peak",
+            channels=embed_dim,
+            head_dim=head_dim,
+            heads=num_heads,
+            edge_name_1="peak_peak_attn",
+            edge_name_2="res_peak_attn",
+            device=device,
+        )
+
+        # 4. NOE ← (Residue, Peak): BiAxial attention
+        self.noe_from_residue_peak = BiAxialAttention(
+            source_type_1="Residue",
+            source_type_2="Peak",
+            dest_type="Noe",
+            channels=embed_dim,
+            head_dim=head_dim,
+            heads=num_heads,
+            edge_name_1="res_noe_attn",
+            edge_name_2="peak_noe_attn",
+            device=device,
+        )
+
+        # 5. Residue ← NOE: MonoAxial attention
+        self.residue_from_noe = MonoAxialAttention(
+            source_type="Noe",
+            dest_type="Residue",
+            in_channels=embed_dim,
+            out_channels=embed_dim,
+            head_dim=head_dim,
+            heads=num_heads,
+            edge_name="noe_res_attn",
+            device=device,
+        )
+
+        # 6. Peak ← NOE: MonoAxial attention
+        self.peak_from_noe = MonoAxialAttention(
+            source_type="Noe",
+            dest_type="Peak",
+            in_channels=embed_dim,
+            out_channels=embed_dim,
+            head_dim=head_dim,
+            heads=num_heads,
+            edge_name="noe_peak_attn",
+            device=device,
+        )
+
+    def forward(self, data):
+        """
+        Process attention operations in sequence.
+
+        Execution order matches the design specification:
+        1. Assigned pairs (Peak ↔ Residue bidirectional)
+        2. Residue updates from Residue and Peak
+        3. Peak updates from Peak and Residue
+        4. NOE updates from Residue and Peak
+        5. Residue updates from NOE
+        6. Peak updates from NOE
+
+        Args:
+            data: HeteroData graph with node features and edges
+
+        Returns:
+            Updated HeteroData graph with all node features updated
+        """
+        data = self.assigned_pair(data)
+        data = self.residue_from_residue_peak(data)
+        data = self.peak_from_peak_residue(data)
+        data = self.noe_from_residue_peak(data)
+        data = self.residue_from_noe(data)
+        data = self.peak_from_noe(data)
         return data
 
 
@@ -220,10 +367,14 @@ class NMRNet(nn.Module):
     """
     Complete NMR GNN model combining message passing with prediction heads.
 
-    Stacks NMRLayer(s) for graph message passing, then uses ValueCalc and
+    Supports two architecture types via config.layer_type:
+    - "triple": Uses NMRLayer with triple-based message passing (default)
+    - "transformer": Uses NMRTransformerLayer with attention mechanisms
+
+    Stacks the selected layer type for graph message passing, then uses ValueCalc and
     PolicyCalc heads to predict state value and action probabilities.
 
-    Pre-normalization is now handled within each message passing component,
+    Pre-normalization is handled within each message passing component,
     ensuring gradients flow through clean residual paths.
     """
 
@@ -238,10 +389,18 @@ class NMRNet(nn.Module):
 
         self.embed_features = EmbedFeatures(device, config)
 
-        # Build sequential stack of NMRLayers (no post-normalization)
+        # Build sequential stack of message passing layers based on config.layer_type
         layers = []
         for _ in range(config.num_nmr_layers):
-            layers.append(NMRLayer(device, config))
+            if config.layer_type == "triple":
+                layers.append(NMRLayer(device, config))
+            elif config.layer_type == "transformer":
+                layers.append(NMRTransformerLayer(device, config))
+            else:
+                raise ValueError(
+                    f"Unknown layer_type: {config.layer_type}. "
+                    f"Expected 'triple' or 'transformer'."
+                )
 
         self.nmr = nn.Sequential(*layers)
 

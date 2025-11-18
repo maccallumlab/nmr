@@ -96,7 +96,7 @@ def construct_edges(data: HeteroData, device: torch.device | str) -> HeteroData:
     Constructs all edge indices for the heterogeneous graph.
 
     Creates bidirectional propagation edges, value aggregation edges, and policy edges
-    for all triple configurations.
+    for all triple configurations, plus transformer attention edges.
 
     Args:
         data: HeteroData graph with nodes already constructed
@@ -123,6 +123,7 @@ def construct_edges(data: HeteroData, device: torch.device | str) -> HeteroData:
         data, ("Peak", "Peak", "Noe"), num_noe, num_peak, num_residue, device
     )
     _add_value_aggregation_edges(data, num_noe, num_peak, num_residue, device)
+    _add_transformer_attention_edges(data, num_noe, num_peak, num_residue, device)
     return data
 
 
@@ -485,3 +486,92 @@ def _add_triple_edges(
     data["Noe", "prop_noe", triple_name].edge_index = torch.stack(
         [edges[0, 0], edges[1, 0]], dim=0
     )
+
+
+def _add_transformer_attention_edges(
+    data: HeteroData,
+    num_noe: int,
+    num_peak: int,
+    num_residue: int,
+    device: torch.device | str,
+) -> None:
+    """
+    Adds transformer attention edges for all attention operations.
+
+    Creates fully connected edges for:
+    - Residue self-attention
+    - Peak self-attention
+    - Residue-Peak cross-attention (both directions)
+    - Residue-NOE cross-attention (both directions)
+    - Peak-NOE cross-attention (both directions)
+
+    Args:
+        data: HeteroData graph to add edges to
+        num_noe: Number of NOE nodes
+        num_peak: Number of peak nodes
+        num_residue: Number of residue nodes
+        device: Device to place tensors on
+    """
+    # 1. Residue self-attention: all-to-all Residue connections
+    if num_residue > 0:
+        res_sources = torch.arange(num_residue, device=device).repeat_interleave(num_residue)
+        res_targets = torch.arange(num_residue, device=device).repeat(num_residue)
+        data["Residue", "res_res_attn", "Residue"].edge_index = torch.stack(
+            [res_sources, res_targets], dim=0
+        )
+
+    # 2. Peak self-attention: all-to-all Peak connections
+    if num_peak > 0:
+        peak_sources = torch.arange(num_peak, device=device).repeat_interleave(num_peak)
+        peak_targets = torch.arange(num_peak, device=device).repeat(num_peak)
+        data["Peak", "peak_peak_attn", "Peak"].edge_index = torch.stack(
+            [peak_sources, peak_targets], dim=0
+        )
+
+    # 3. Peak → Residue cross-attention: all Peaks to all Residues
+    if num_peak > 0 and num_residue > 0:
+        peak_sources = torch.arange(num_peak, device=device).repeat_interleave(num_residue)
+        res_targets = torch.arange(num_residue, device=device).repeat(num_peak)
+        data["Peak", "peak_res_attn", "Residue"].edge_index = torch.stack(
+            [peak_sources, res_targets], dim=0
+        )
+
+    # 4. Residue → Peak cross-attention: all Residues to all Peaks
+    if num_residue > 0 and num_peak > 0:
+        res_sources = torch.arange(num_residue, device=device).repeat_interleave(num_peak)
+        peak_targets = torch.arange(num_peak, device=device).repeat(num_residue)
+        data["Residue", "res_peak_attn", "Peak"].edge_index = torch.stack(
+            [res_sources, peak_targets], dim=0
+        )
+
+    # 5. Residue → NOE cross-attention: all Residues to all NOEs
+    if num_residue > 0 and num_noe > 0:
+        res_sources = torch.arange(num_residue, device=device).repeat_interleave(num_noe)
+        noe_targets = torch.arange(num_noe, device=device).repeat(num_residue)
+        data["Residue", "res_noe_attn", "Noe"].edge_index = torch.stack(
+            [res_sources, noe_targets], dim=0
+        )
+
+    # 6. Peak → NOE cross-attention: all Peaks to all NOEs
+    if num_peak > 0 and num_noe > 0:
+        peak_sources = torch.arange(num_peak, device=device).repeat_interleave(num_noe)
+        noe_targets = torch.arange(num_noe, device=device).repeat(num_peak)
+        data["Peak", "peak_noe_attn", "Noe"].edge_index = torch.stack(
+            [peak_sources, noe_targets], dim=0
+        )
+
+    # 7. NOE → Residue cross-attention: all NOEs to all Residues
+    if num_noe > 0 and num_residue > 0:
+        noe_sources = torch.arange(num_noe, device=device).repeat_interleave(num_residue)
+        res_targets = torch.arange(num_residue, device=device).repeat(num_noe)
+        data["Noe", "noe_res_attn", "Residue"].edge_index = torch.stack(
+            [noe_sources, res_targets], dim=0
+        )
+
+    # 8. NOE → Peak cross-attention: all NOEs to all Peaks
+    if num_noe > 0 and num_peak > 0:
+        noe_sources = torch.arange(num_noe, device=device).repeat_interleave(num_peak)
+        peak_targets = torch.arange(num_peak, device=device).repeat(num_noe)
+        data["Noe", "noe_peak_attn", "Peak"].edge_index = torch.stack(
+            [noe_sources, peak_targets], dim=0
+        )
