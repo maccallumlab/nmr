@@ -58,30 +58,26 @@ class AssignedPeakToResidueMessage(MessagePassing):
     - Only updates .x features (feature portion only)
     """
 
-    def __init__(self, device, config, hidden_size: int = None, num_layers: int = None):
+    def __init__(self, device, config):
         """
         Initialize AssignedPeakToResidueMessage.
 
         Args:
             device: torch device (CPU or CUDA)
             config: ModelConfig with dimension settings
-            hidden_size: Number of hidden units in MLP (default: from config)
-            num_layers: Number of hidden layers (default: from config)
         """
         super().__init__(aggr="mean", flow="source_to_target")
         self.device = device
         self.config = config
         self.edge_type = ("Peak", "assigned_to", "Residue")
 
-        # Use config defaults if not specified
-        if hidden_size is None:
-            hidden_size = config.mlp.hidden_size
-        if num_layers is None:
-            num_layers = config.mlp.num_layers
+        # Extract parameters from config
+        hidden_size = config.message_mlp.hidden_size
+        num_layers = config.message_mlp.num_layers
 
         # Calculate input/output sizes from config
         # NOTE: With unified architecture, .x is [embed_dim], not split into shift+feature
-        embed_dim = config.embed.embed_dim
+        embed_dim = config.shared.embed_dim
 
         # Input: peak features (embed_dim) + residue features (embed_dim)
         # NO SHIFT DIFFERENCES - using absolute embedded features
@@ -212,30 +208,26 @@ class AssignedResidueToPeakMessage(MessagePassing):
     - Only updates .x features (feature portion only)
     """
 
-    def __init__(self, device, config, hidden_size: int = None, num_layers: int = None):
+    def __init__(self, device, config):
         """
         Initialize AssignedResidueToPeakMessage.
 
         Args:
             device: torch device (CPU or CUDA)
             config: ModelConfig with dimension settings
-            hidden_size: Number of hidden units in MLP (default: from config)
-            num_layers: Number of hidden layers (default: from config)
         """
         super().__init__(aggr="mean", flow="target_to_source")
         self.device = device
         self.config = config
         self.edge_type = ("Peak", "assigned_to", "Residue")
 
-        # Use config defaults if not specified
-        if hidden_size is None:
-            hidden_size = config.mlp.hidden_size
-        if num_layers is None:
-            num_layers = config.mlp.num_layers
+        # Extract parameters from config
+        hidden_size = config.message_mlp.hidden_size
+        num_layers = config.message_mlp.num_layers
 
         # Calculate input/output sizes from config
         # NOTE: With unified architecture, .x is [embed_dim], not split into shift+feature
-        embed_dim = config.embed.embed_dim
+        embed_dim = config.shared.embed_dim
 
         # Input: residue features (embed_dim) + peak features (embed_dim)
         # NO SHIFT DIFFERENCES - using absolute embedded features
@@ -366,21 +358,19 @@ class AssignedPair(nn.Module):
         peak_to_residue → residue_to_peak
     """
 
-    def __init__(self, device, config, hidden_size: int = None, num_layers: int = None):
+    def __init__(self, device, config):
         """
         Initialize AssignedPair.
 
         Args:
             device: torch device (CPU or CUDA)
             config: ModelConfig with dimension settings
-            hidden_size: Hidden units in message MLPs (default: from config)
-            num_layers: Hidden layers in message MLPs (default: from config)
         """
         super().__init__()
 
-        # Instantiate both message passing operations - pass config
-        self.peak_to_residue = AssignedPeakToResidueMessage(device, config, hidden_size, num_layers)
-        self.residue_to_peak = AssignedResidueToPeakMessage(device, config, hidden_size, num_layers)
+        # Instantiate both message passing operations
+        self.peak_to_residue = AssignedPeakToResidueMessage(device, config)
+        self.residue_to_peak = AssignedResidueToPeakMessage(device, config)
 
     def forward(self, data):
         """

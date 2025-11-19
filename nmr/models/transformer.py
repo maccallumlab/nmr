@@ -31,12 +31,12 @@ Node Types:
 - Noe: NOE constraints .shifts [N, H', H"] and features .x
 """
 
-from dataclasses import dataclass
-
 import torch
 import torch.nn as nn
 from torch_geometric.nn import MessagePassing
 from torch_geometric.utils import softmax
+
+from .config import AttentionConfig, MLPConfig, ModelConfig
 
 
 # ============================================================================
@@ -59,19 +59,6 @@ def calc_res_distance(xyz_i, xyz_j):
     distance = torch.norm(rel_dist, dim=-1, keepdim=True)  # [num_edges, 1]
     return distance
 
-
-# ============================================================================
-# SECTION 1: Configuration Dataclasses
-# ============================================================================
-
-
-@dataclass
-class AttentionConfig:
-    """Configuration for attention mechanisms."""
-
-    num_heads: int = 4  # Number of attention heads
-    attention_dim: int = 64  # Dimension of attention space per head
-
 # ============================================================================
 # SECTION 2: Basic Attention Mechanisms
 # ============================================================================
@@ -89,11 +76,8 @@ class AttentionCore(MessagePassing):
         alpha_ij = softmax_j(att^T * LeakyReLU(W_l*x_i + W_r*x_j))
 
     Args:
-        in_channels: Dimension of input node embeddings
-        out_channels: Dimension of output features
-        head_dim: Dimension per attention head
-        heads: Number of attention heads (default: 1)
-        negative_slope: LeakyReLU negative slope (default: 0.2)
+        embed_dim: Input/output feature dimension
+        attention_config: AttentionConfig containing attention_dim and num_heads
         device: torch device (CPU or CUDA)
 
     Returns:
@@ -103,39 +87,32 @@ class AttentionCore(MessagePassing):
         "How Attentive are Graph Attention Networks?" (Brody et al., 2021)
     """
 
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        head_dim: int,
-        heads: int = 1,
-        negative_slope: float = 0.2,
-        device=None,
-    ):
-        """Initialize AttentionCore module."""
+    def __init__(self, embed_dim: int, attention_config: AttentionConfig, device):
+        """Initialize AttentionCore module with explicit parameters."""
         # Initialize MessagePassing with add aggregation (attention weights already normalized)
         super().__init__(aggr="add", node_dim=0)
 
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.head_dim = head_dim
-        self.heads = heads
-        self.negative_slope = negative_slope
+        # Store parameters
         self.device = device
+        self.in_channels = embed_dim
+        self.out_channels = embed_dim
+        self.head_dim = attention_config.attention_dim
+        self.heads = attention_config.num_heads
+        self.negative_slope = 0.2  # Fixed value (not user-configurable)
 
         # Pre-normalization layers for inputs (pre-norm pattern)
-        self.norm_source = nn.LayerNorm(in_channels, device=device)
-        self.norm_dest = nn.LayerNorm(in_channels, device=device)
+        self.norm_source = nn.LayerNorm(embed_dim, device=device)
+        self.norm_dest = nn.LayerNorm(embed_dim, device=device)
 
         # GATv2: Separate linear transformations for destination (target) and source nodes
-        self.lin_dest = nn.Linear(in_channels, heads * head_dim, bias=False, device=device)
-        self.lin_source = nn.Linear(in_channels, heads * head_dim, bias=False, device=device)
+        self.lin_dest = nn.Linear(embed_dim, self.heads * self.head_dim, bias=False, device=device)
+        self.lin_source = nn.Linear(embed_dim, self.heads * self.head_dim, bias=False, device=device)
 
         # Attention parameter: shape (1, heads, head_dim)
-        self.att = nn.Parameter(torch.empty(1, heads, head_dim, device=device))
+        self.att = nn.Parameter(torch.empty(1, self.heads, self.head_dim, device=device))
 
         # Output projection: project concatenated heads back to out_channels
-        self.out_proj = nn.Linear(heads * head_dim, out_channels, device=device)
+        self.out_proj = nn.Linear(self.heads * self.head_dim, embed_dim, device=device)
 
         self.reset_parameters()
 
@@ -237,18 +214,15 @@ class SpatialAttentionCore(MessagePassing):
         - Adds distance features to node features before computing attention
 
     Args:
-        in_channels: Dimension of input node embeddings
-        out_channels: Dimension of output features
-        head_dim: Dimension per attention head
-        heads: Number of attention heads (default: 1)
-        negative_slope: LeakyReLU negative slope (default: 0.2)
+        embed_dim: Input/output feature dimension
+        attention_config: AttentionConfig containing attention_dim and num_heads
         device: torch device (CPU or CUDA)
 
     Returns:
         Delta (attention output before residual): [num_dest_nodes, out_channels]
 
     Example:
-        >>> core = SpatialAttentionCore(64, 64, head_dim=16, heads=4)
+        >>> core = SpatialAttentionCore(embed_dim=128, attention_config=config, device=device)
         >>> delta = core(x_source, x_dest, xyz_source, xyz_dest, edge_index)
         >>> x_new = x_dest + delta  # Apply residual (done by wrapper)
 
@@ -256,42 +230,35 @@ class SpatialAttentionCore(MessagePassing):
         "How Attentive are Graph Attention Networks?" (Brody et al., 2021)
     """
 
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        head_dim: int,
-        heads: int = 1,
-        negative_slope: float = 0.2,
-        device=None,
-    ):
-        """Initialize SpatialAttentionCore module."""
+    def __init__(self, embed_dim: int, attention_config: AttentionConfig, device):
+        """Initialize SpatialAttentionCore module with explicit parameters."""
         # Initialize MessagePassing with add aggregation (attention weights already normalized)
         super().__init__(aggr="add", node_dim=0)
 
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.head_dim = head_dim
-        self.heads = heads
-        self.negative_slope = negative_slope
+        # Store parameters
         self.device = device
+        self.in_channels = embed_dim
+        self.out_channels = embed_dim
+        self.head_dim = attention_config.attention_dim
+        self.heads = attention_config.num_heads
+        self.negative_slope = 0.2  # Fixed value (not user-configurable)
 
         # Pre-normalization layers for inputs (pre-norm pattern)
-        self.norm_source = nn.LayerNorm(in_channels, device=device)
-        self.norm_dest = nn.LayerNorm(in_channels, device=device)
+        self.norm_source = nn.LayerNorm(embed_dim, device=device)
+        self.norm_dest = nn.LayerNorm(embed_dim, device=device)
 
         # GATv2: Separate linear transformations for destination (target) and source nodes
-        self.lin_dest = nn.Linear(in_channels, heads * head_dim, bias=False, device=device)
-        self.lin_source = nn.Linear(in_channels, heads * head_dim, bias=False, device=device)
+        self.lin_dest = nn.Linear(embed_dim, self.heads * self.head_dim, bias=False, device=device)
+        self.lin_source = nn.Linear(embed_dim, self.heads * self.head_dim, bias=False, device=device)
 
         # Distance transformation: distance (1D) to feature space
-        self.lin_dist = nn.Linear(1, heads * head_dim, bias=False, device=device)
+        self.lin_dist = nn.Linear(1, self.heads * self.head_dim, bias=False, device=device)
 
         # Attention parameter: shape (1, heads, head_dim)
-        self.att = nn.Parameter(torch.empty(1, heads, head_dim, device=device))
+        self.att = nn.Parameter(torch.empty(1, self.heads, self.head_dim, device=device))
 
         # Output projection: project concatenated heads back to out_channels
-        self.out_proj = nn.Linear(heads * head_dim, out_channels, device=device)
+        self.out_proj = nn.Linear(self.heads * self.head_dim, embed_dim, device=device)
 
         self.reset_parameters()
 
@@ -442,37 +409,32 @@ class MonoAxialAttention(nn.Module):
         self,
         source_type: str,
         dest_type: str,
-        in_channels: int,
-        out_channels: int,
-        head_dim: int,
-        heads: int = 1,
-        negative_slope: float = 0.2,
-        edge_name: str = "self_attn",
-        device=None,
+        edge_name: str,
+        embed_dim: int,
+        attention_config: AttentionConfig,
+        device,
     ):
         """
-        Initialize MonoAxialAttention wrapper.
+        Initialize MonoAxialAttention wrapper with explicit parameters.
 
         Args:
             source_type: Type of source nodes ("Peak", "Noe", or "Residue")
             dest_type: Type of destination nodes ("Peak", "Noe", or "Residue")
-            in_channels: Dimension of input node embeddings (.x attribute)
-            out_channels: Dimension of output node embeddings (.x attribute)
-            head_dim: Dimension per attention head
-            heads: Number of attention heads (default: 1)
-            negative_slope: LeakyReLU negative slope (default: 0.2)
-            edge_name: Name for edge type (default: "self_attn")
+            edge_name: Name for edge type (e.g., "self_attn", "noe_res_attn")
+            embed_dim: Input/output feature dimension
+            attention_config: AttentionConfig containing attention_dim and num_heads
             device: torch device (CPU or CUDA)
         """
         super().__init__()
 
+        # Store parameters
+        self.device = device
         self.source_type = source_type
         self.dest_type = dest_type
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.head_dim = head_dim
-        self.heads = heads
-        self.device = device
+        self.in_channels = embed_dim
+        self.out_channels = embed_dim
+        self.head_dim = attention_config.attention_dim
+        self.heads = attention_config.num_heads
 
         # Edge type for attention (can be self or cross-attention)
         self.edge_type = (source_type, edge_name, dest_type)
@@ -481,28 +443,14 @@ class MonoAxialAttention(nn.Module):
         # Use SpatialAttentionCore when both source and dest are Residue nodes (with xyz coordinates)
         # Otherwise use standard AttentionCore (for Peak, Noe, or mixed-type attention)
         if source_type == "Residue" and dest_type == "Residue":
-            self.core = SpatialAttentionCore(
-                in_channels=in_channels,
-                out_channels=out_channels,
-                head_dim=head_dim,
-                heads=heads,
-                negative_slope=negative_slope,
-                device=device,
-            )
+            self.core = SpatialAttentionCore(embed_dim, attention_config, device)
         else:
-            self.core = AttentionCore(
-                in_channels=in_channels,
-                out_channels=out_channels,
-                head_dim=head_dim,
-                heads=heads,
-                negative_slope=negative_slope,
-                device=device,
-            )
+            self.core = AttentionCore(embed_dim, attention_config, device)
 
         # Projection layer for residual connection
         # Use linear projection when dimensions don't match, identity otherwise
-        if in_channels != out_channels:
-            self.projection = nn.Linear(in_channels, out_channels, device=device)
+        if embed_dim != embed_dim:  # This will always be False, but keeping structure
+            self.projection = nn.Linear(embed_dim, embed_dim, device=device)
         else:
             self.projection = nn.Identity()
 
@@ -613,17 +561,15 @@ class BiAxialAttention(nn.Module):
         source_type_1: str,
         source_type_2: str,
         dest_type: str,
-        channels: int,
-        head_dim: int,
-        heads: int = 1,
-        negative_slope: float = 0.2,
-        edge_name_1: str = None,
-        edge_name_2: str = None,
-        hidden_size: int = None,
-        device=None,
+        edge_name_1: str,
+        edge_name_2: str,
+        embed_dim: int,
+        attention_config: AttentionConfig,
+        combine_mlp_config: MLPConfig,
+        device,
     ):
         """
-        Initialize BiAxialAttention module.
+        Initialize BiAxialAttention module with explicit parameters.
 
         Creates two AttentionCore instances for dual attention from two source types,
         a linear transformation layer for destination features, and a combination MLP for
@@ -633,47 +579,25 @@ class BiAxialAttention(nn.Module):
             source_type_1: Type of first source node type (e.g., "Residue").
             source_type_2: Type of second source node type (e.g., "Peak").
             dest_type: Type of destination node type (e.g., "Noe").
-            channels: Dimension of node embeddings (.x attribute) for all node types.
-                Used for both input and output (assumes in_channels == out_channels).
-                Must match the feature dimension of all source and destination nodes.
-            head_dim: Dimension per attention head. Total attention dimension per core
-                is heads * head_dim.
-            heads: Number of attention heads for multi-head attention (default: 1).
-                Higher values allow the model to attend to different representation
-                subspaces simultaneously.
-            negative_slope: LeakyReLU negative slope for attention computation (default: 0.2).
-                Controls the slope for negative values in the attention scoring function.
-            edge_name_1: Edge type name for first source (default: "biaxial_attn_1").
-            edge_name_2: Edge type name for second source (default: "biaxial_attn_2").
-            hidden_size: Hidden dimension for combination MLP (default: channels * 2).
-                If None, defaults to channels * 2 for sufficient representational capacity.
+            edge_name_1: Edge type name for first source (e.g., "res_noe_attn").
+            edge_name_2: Edge type name for second source (e.g., "peak_noe_attn").
+            embed_dim: Input/output feature dimension
+            attention_config: AttentionConfig containing attention_dim and num_heads
+            combine_mlp_config: MLPConfig for combination MLP
             device: torch device (CPU or CUDA) for parameter initialization and computation.
-                All parameters and computations will use this device.
         """
         super().__init__()
 
-        # Store node types
+        # Store parameters
+        self.device = device
         self.source_type_1 = source_type_1
         self.source_type_2 = source_type_2
         self.dest_type = dest_type
+        self.channels = embed_dim
+        self.head_dim = attention_config.attention_dim
+        self.heads = attention_config.num_heads
 
-        # Store configuration
-        self.channels = channels
-        self.head_dim = head_dim
-        self.heads = heads
-        self.device = device
-
-        # Default hidden size for combination MLP
-        if hidden_size is None:
-            hidden_size = channels * 2
-
-        # Generate default edge names if not provided
-        if edge_name_1 is None:
-            edge_name_1 = "biaxial_attn_1"
-        if edge_name_2 is None:
-            edge_name_2 = "biaxial_attn_2"
-
-        # Construct edge type tuples dynamically
+        # Construct edge type tuples
         # Convention: (source_type, edge_name, dest_type)
         self.edge_type_1 = (source_type_1, edge_name_1, dest_type)
         self.edge_type_2 = (source_type_2, edge_name_2, dest_type)
@@ -682,58 +606,30 @@ class BiAxialAttention(nn.Module):
         # Use SpatialAttentionCore when both source and dest are Residue nodes
         # Otherwise use standard AttentionCore (for Peak, Noe, or mixed-type attention)
         if source_type_1 == "Residue" and dest_type == "Residue":
-            self.attention_1 = SpatialAttentionCore(
-                in_channels=channels,
-                out_channels=channels,
-                head_dim=head_dim,
-                heads=heads,
-                negative_slope=negative_slope,
-                device=device,
-            )
+            self.attention_1 = SpatialAttentionCore(embed_dim, attention_config, device)
         else:
-            self.attention_1 = AttentionCore(
-                in_channels=channels,
-                out_channels=channels,
-                head_dim=head_dim,
-                heads=heads,
-                negative_slope=negative_slope,
-                device=device,
-            )
+            self.attention_1 = AttentionCore(embed_dim, attention_config, device)
 
         if source_type_2 == "Residue" and dest_type == "Residue":
-            self.attention_2 = SpatialAttentionCore(
-                in_channels=channels,
-                out_channels=channels,
-                head_dim=head_dim,
-                heads=heads,
-                negative_slope=negative_slope,
-                device=device,
-            )
+            self.attention_2 = SpatialAttentionCore(embed_dim, attention_config, device)
         else:
-            self.attention_2 = AttentionCore(
-                in_channels=channels,
-                out_channels=channels,
-                head_dim=head_dim,
-                heads=heads,
-                negative_slope=negative_slope,
-                device=device,
-            )
+            self.attention_2 = AttentionCore(embed_dim, attention_config, device)
 
         # Destination feature transformation layer
         # Projects destination features to output dimension for combination
-        self.dest_linear = nn.Linear(channels, channels, device=device)
+        self.dest_linear = nn.Linear(embed_dim, embed_dim, device=device)
 
         # Pre-normalization layers
-        self.norm_source_1 = nn.LayerNorm(channels, device=device)
-        self.norm_source_2 = nn.LayerNorm(channels, device=device)
-        self.norm_dest = nn.LayerNorm(channels, device=device)
+        self.norm_source_1 = nn.LayerNorm(embed_dim, device=device)
+        self.norm_source_2 = nn.LayerNorm(embed_dim, device=device)
+        self.norm_dest = nn.LayerNorm(embed_dim, device=device)
 
         # Combination MLP: Linear -> ReLU -> Linear
-        mlp_input_size = channels * 3
+        mlp_input_size = embed_dim * 3
         self.combine_mlp = nn.Sequential(
-            nn.Linear(mlp_input_size, hidden_size, device=device),
+            nn.Linear(mlp_input_size, combine_mlp_config.hidden_size, device=device),
             nn.ReLU(),
-            nn.Linear(hidden_size, channels, device=device),
+            nn.Linear(combine_mlp_config.hidden_size, embed_dim, device=device),
         )
 
         self.reset_parameters()
@@ -875,18 +771,16 @@ class TriAxialAttention(nn.Module):
         source_type_2: str,
         source_type_3: str,
         dest_type: str,
-        channels: int,
-        head_dim: int,
-        heads: int = 1,
-        negative_slope: float = 0.2,
-        edge_name_1: str = None,
-        edge_name_2: str = None,
-        edge_name_3: str = None,
-        hidden_size: int = None,
-        device=None,
+        edge_name_1: str,
+        edge_name_2: str,
+        edge_name_3: str,
+        embed_dim: int,
+        attention_config: AttentionConfig,
+        combine_mlp_config: MLPConfig,
+        device,
     ):
         """
-        Initialize TriAxialAttention module.
+        Initialize TriAxialAttention module with explicit parameters.
 
         Creates three AttentionCore/SpatialAttentionCore instances for triple attention from
         three source types, a linear transformation layer for destination features, and a
@@ -897,51 +791,27 @@ class TriAxialAttention(nn.Module):
             source_type_2: Type of second source node type (e.g., "Residue").
             source_type_3: Type of third source node type (e.g., "Peak").
             dest_type: Type of destination node type (e.g., "Noe").
-            channels: Dimension of node embeddings (.x attribute) for all node types.
-                Used for both input and output (assumes in_channels == out_channels).
-                Must match the feature dimension of all source and destination nodes.
-            head_dim: Dimension per attention head. Total attention dimension per core
-                is heads * head_dim.
-            heads: Number of attention heads for multi-head attention (default: 1).
-                Higher values allow the model to attend to different representation
-                subspaces simultaneously.
-            negative_slope: LeakyReLU negative slope for attention computation (default: 0.2).
-                Controls the slope for negative values in the attention scoring function.
-            edge_name_1: Edge type name for first source (default: "triaxial_attn_1").
-            edge_name_2: Edge type name for second source (default: "triaxial_attn_2").
-            edge_name_3: Edge type name for third source (default: "triaxial_attn_3").
-            hidden_size: Hidden dimension for combination MLP (default: channels * 2).
-                If None, defaults to channels * 2 for sufficient representational capacity.
+            edge_name_1: Edge type name for first source (e.g., "triaxial_attn_1").
+            edge_name_2: Edge type name for second source (e.g., "triaxial_attn_2").
+            edge_name_3: Edge type name for third source (e.g., "triaxial_attn_3").
+            embed_dim: Input/output feature dimension
+            attention_config: AttentionConfig containing attention_dim and num_heads
+            combine_mlp_config: MLPConfig for combination MLP
             device: torch device (CPU or CUDA) for parameter initialization and computation.
-                All parameters and computations will use this device.
         """
         super().__init__()
 
-        # Store node types
+        # Store parameters
+        self.device = device
         self.source_type_1 = source_type_1
         self.source_type_2 = source_type_2
         self.source_type_3 = source_type_3
         self.dest_type = dest_type
+        self.channels = embed_dim
+        self.head_dim = attention_config.attention_dim
+        self.heads = attention_config.num_heads
 
-        # Store configuration
-        self.channels = channels
-        self.head_dim = head_dim
-        self.heads = heads
-        self.device = device
-
-        # Default hidden size for combination MLP
-        if hidden_size is None:
-            hidden_size = channels * 2
-
-        # Generate default edge names if not provided
-        if edge_name_1 is None:
-            edge_name_1 = "triaxial_attn_1"
-        if edge_name_2 is None:
-            edge_name_2 = "triaxial_attn_2"
-        if edge_name_3 is None:
-            edge_name_3 = "triaxial_attn_3"
-
-        # Construct edge type tuples dynamically
+        # Construct edge type tuples
         # Convention: (source_type, edge_name, dest_type)
         self.edge_type_1 = (source_type_1, edge_name_1, dest_type)
         self.edge_type_2 = (source_type_2, edge_name_2, dest_type)
@@ -951,81 +821,39 @@ class TriAxialAttention(nn.Module):
         # Use SpatialAttentionCore when both source and dest are Residue nodes
         # Otherwise use standard AttentionCore (for Peak, Noe, or mixed-type attention)
         if source_type_1 == "Residue" and dest_type == "Residue":
-            self.attention_1 = SpatialAttentionCore(
-                in_channels=channels,
-                out_channels=channels,
-                head_dim=head_dim,
-                heads=heads,
-                negative_slope=negative_slope,
-                device=device,
-            )
+            self.attention_1 = SpatialAttentionCore(embed_dim, attention_config, device)
         else:
-            self.attention_1 = AttentionCore(
-                in_channels=channels,
-                out_channels=channels,
-                head_dim=head_dim,
-                heads=heads,
-                negative_slope=negative_slope,
-                device=device,
-            )
+            self.attention_1 = AttentionCore(embed_dim, attention_config, device)
 
         if source_type_2 == "Residue" and dest_type == "Residue":
-            self.attention_2 = SpatialAttentionCore(
-                in_channels=channels,
-                out_channels=channels,
-                head_dim=head_dim,
-                heads=heads,
-                negative_slope=negative_slope,
-                device=device,
-            )
+            self.attention_2 = SpatialAttentionCore(embed_dim, attention_config, device)
         else:
-            self.attention_2 = AttentionCore(
-                in_channels=channels,
-                out_channels=channels,
-                head_dim=head_dim,
-                heads=heads,
-                negative_slope=negative_slope,
-                device=device,
-            )
+            self.attention_2 = AttentionCore(embed_dim, attention_config, device)
 
         if source_type_3 == "Residue" and dest_type == "Residue":
-            self.attention_3 = SpatialAttentionCore(
-                in_channels=channels,
-                out_channels=channels,
-                head_dim=head_dim,
-                heads=heads,
-                negative_slope=negative_slope,
-                device=device,
-            )
+            self.attention_3 = SpatialAttentionCore(embed_dim, attention_config, device)
         else:
-            self.attention_3 = AttentionCore(
-                in_channels=channels,
-                out_channels=channels,
-                head_dim=head_dim,
-                heads=heads,
-                negative_slope=negative_slope,
-                device=device,
-            )
+            self.attention_3 = AttentionCore(embed_dim, attention_config, device)
 
         # Destination feature transformation layer
         # Projects destination features to output dimension for combination
-        self.dest_linear = nn.Linear(channels, channels, device=device)
+        self.dest_linear = nn.Linear(embed_dim, embed_dim, device=device)
 
         # Pre-normalization layers for inputs (pre-norm pattern)
-        self.norm_source_1 = nn.LayerNorm(channels, device=device)
-        self.norm_source_2 = nn.LayerNorm(channels, device=device)
-        self.norm_source_3 = nn.LayerNorm(channels, device=device)
-        self.norm_dest = nn.LayerNorm(channels, device=device)
+        self.norm_source_1 = nn.LayerNorm(embed_dim, device=device)
+        self.norm_source_2 = nn.LayerNorm(embed_dim, device=device)
+        self.norm_source_3 = nn.LayerNorm(embed_dim, device=device)
+        self.norm_dest = nn.LayerNorm(embed_dim, device=device)
 
         # Combination MLP: merges attention outputs with destination features
         # Architecture: Linear -> ReLU -> Linear (no internal LayerNorm - pre-norm pattern)
         # Input: delta_1 + delta_2 + delta_3 + dest_transformed = channels * 4
         # Output: channels (for residual application)
-        mlp_input_size = channels * 4
+        mlp_input_size = embed_dim * 4
         self.combine_mlp = nn.Sequential(
-            nn.Linear(mlp_input_size, hidden_size, device=device),
+            nn.Linear(mlp_input_size, combine_mlp_config.hidden_size, device=device),
             nn.ReLU(),
-            nn.Linear(hidden_size, channels, device=device),
+            nn.Linear(combine_mlp_config.hidden_size, embed_dim, device=device),
         )
 
         self.reset_parameters()

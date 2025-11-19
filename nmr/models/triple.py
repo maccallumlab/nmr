@@ -294,11 +294,11 @@ class ResidueUpdate(nn.Module):
         self.config = config
 
         # Get MLP configuration from config
-        hidden_size = config.mlp.hidden_size
-        num_layers = config.mlp.num_layers
+        hidden_size = config.message_mlp.hidden_size
+        num_layers = config.message_mlp.num_layers
 
         # Calculate input/output sizes from config
-        feature_dim = config.embed.embed_dim
+        feature_dim = config.shared.embed_dim
         input_size = residue_update_input_size(feature_dim)
         output_size = residue_update_output_size(feature_dim)
 
@@ -420,11 +420,11 @@ class PeakUpdate(nn.Module):
         self.config = config
 
         # Get MLP configuration from config
-        hidden_size = config.mlp.hidden_size
-        num_layers = config.mlp.num_layers
+        hidden_size = config.message_mlp.hidden_size
+        num_layers = config.message_mlp.num_layers
 
         # Calculate input/output sizes from config
-        feature_dim = config.embed.embed_dim
+        feature_dim = config.shared.embed_dim
         input_size = peak_update_input_size(feature_dim)
         output_size = peak_update_output_size(feature_dim)
 

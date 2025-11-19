@@ -5,12 +5,10 @@ Combines triple-based message passing with value and policy heads
 to create the complete neural network for NMR assignment.
 """
 
-from dataclasses import dataclass, field
-from typing import Literal
-
 import torch
 import torch.nn as nn
 
+from .config import AttentionConfig, ShiftStandardizeConfig, MLPConfig, ModelConfig, SharedConfig
 from .heads import PolicyCalc, ValueCalc
 from .pair import AssignedPair
 from .triple import (
@@ -19,39 +17,7 @@ from .triple import (
     ResiduePeakNoeTriple,
     ResidueResidueNoeTriple,
 )
-from .transformer import AttentionConfig, BiAxialAttention, MonoAxialAttention
-
-
-@dataclass
-class EmbedConfig:
-    """Configuration for embedding shifts+flags to working features."""
-
-    embed_dim: int = 128  # Output dimension for all .x features
-    hidden_dim: int = 128
-    num_layers: int = 1
-    H_lower: float = 6.0
-    H_upper: float = 10.0
-    N_lower: float = 100.0
-    N_upper: float = 135.0
-
-
-@dataclass
-class MLPConfig:
-    """Configuration for MLP layers in message passing."""
-
-    hidden_size: int = 64
-    num_layers: int = 1
-
-
-@dataclass
-class ModelConfig:
-    """Top-level configuration for NMRNet model."""
-
-    num_nmr_layers: int = 1
-    layer_type: Literal["triple", "transformer"] = "triple"  # Layer architecture type
-    embed: EmbedConfig = field(default_factory=EmbedConfig)
-    mlp: MLPConfig = field(default_factory=MLPConfig)
-    attention: AttentionConfig = field(default_factory=AttentionConfig)  # Attention config for transformer
+from .transformer import BiAxialAttention, MonoAxialAttention
 
 
 class NMRLayer(nn.Module):
@@ -130,10 +96,11 @@ class NMRTransformerLayer(nn.Module):
     - ("Noe", "noe_peak_attn", "Peak") - NOE→Peak cross-attention
 
     Configuration:
-    - config.embed.embed_dim: Embedding dimension for all node features
+    - config.shared.embed_dim: Embedding dimension for all node features
     - config.attention.num_heads: Number of attention heads
     - config.attention.attention_dim: Dimension per attention head
-    - config.mlp: MLP configuration for AssignedPair
+    - config.message_mlp: MLP configuration for AssignedPair
+    - config.combine_mlp: MLP configuration for attention combination
     """
 
     def __init__(self, device, config: ModelConfig):
@@ -146,10 +113,8 @@ class NMRTransformerLayer(nn.Module):
         """
         super(NMRTransformerLayer, self).__init__()
 
-        # Extract configuration
-        embed_dim = config.embed.embed_dim
-        num_heads = config.attention.num_heads
-        head_dim = config.attention.attention_dim
+        # Extract parameters from config
+        embed_dim = config.shared.embed_dim
 
         # 1. Assigned pair processing (same as triple-based)
         self.assigned_pair = AssignedPair(device, config)
@@ -159,11 +124,11 @@ class NMRTransformerLayer(nn.Module):
             source_type_1="Residue",
             source_type_2="Peak",
             dest_type="Residue",
-            channels=embed_dim,
-            head_dim=head_dim,
-            heads=num_heads,
             edge_name_1="res_res_attn",
             edge_name_2="peak_res_attn",
+            embed_dim=embed_dim,
+            attention_config=config.attention,
+            combine_mlp_config=config.combine_mlp,
             device=device,
         )
 
@@ -172,11 +137,11 @@ class NMRTransformerLayer(nn.Module):
             source_type_1="Peak",
             source_type_2="Residue",
             dest_type="Peak",
-            channels=embed_dim,
-            head_dim=head_dim,
-            heads=num_heads,
             edge_name_1="peak_peak_attn",
             edge_name_2="res_peak_attn",
+            embed_dim=embed_dim,
+            attention_config=config.attention,
+            combine_mlp_config=config.combine_mlp,
             device=device,
         )
 
@@ -185,11 +150,11 @@ class NMRTransformerLayer(nn.Module):
             source_type_1="Residue",
             source_type_2="Peak",
             dest_type="Noe",
-            channels=embed_dim,
-            head_dim=head_dim,
-            heads=num_heads,
             edge_name_1="res_noe_attn",
             edge_name_2="peak_noe_attn",
+            embed_dim=embed_dim,
+            attention_config=config.attention,
+            combine_mlp_config=config.combine_mlp,
             device=device,
         )
 
@@ -197,11 +162,9 @@ class NMRTransformerLayer(nn.Module):
         self.residue_from_noe = MonoAxialAttention(
             source_type="Noe",
             dest_type="Residue",
-            in_channels=embed_dim,
-            out_channels=embed_dim,
-            head_dim=head_dim,
-            heads=num_heads,
             edge_name="noe_res_attn",
+            embed_dim=embed_dim,
+            attention_config=config.attention,
             device=device,
         )
 
@@ -209,11 +172,9 @@ class NMRTransformerLayer(nn.Module):
         self.peak_from_noe = MonoAxialAttention(
             source_type="Noe",
             dest_type="Peak",
-            in_channels=embed_dim,
-            out_channels=embed_dim,
-            head_dim=head_dim,
-            heads=num_heads,
             edge_name="noe_peak_attn",
+            embed_dim=embed_dim,
+            attention_config=config.attention,
             device=device,
         )
 
@@ -264,38 +225,38 @@ class EmbedFeatures(nn.Module):
         super().__init__()
         self.device = device
         self.config = config
-        self.embed_dim = config.embed.embed_dim
+        self.embed_dim = config.shared.embed_dim
 
         # Normalization parameters for shifts
-        self.H_lower = config.embed.H_lower
-        self.H_upper = config.embed.H_upper
+        self.H_lower = config.shift_standardize.H_lower
+        self.H_upper = config.shift_standardize.H_upper
         self.H_delta = self.H_upper - self.H_lower
-        self.N_lower = config.embed.N_lower
-        self.N_upper = config.embed.N_upper
+        self.N_lower = config.shift_standardize.N_lower
+        self.N_upper = config.shift_standardize.N_upper
         self.N_delta = self.N_upper - self.N_lower
 
         # Embedding MLPs: input → hidden → output
         # Residue: [shifts(2) + flags(1)] = 3 → embed_dim
-        self.residue_embed = self._build_mlp(3, config.embed)
+        self.residue_embed = self._build_mlp(3, config.embed_mlp, self.embed_dim)
         # Peak: [shifts(2) + flags(2)] = 4 → embed_dim
-        self.peak_embed = self._build_mlp(4, config.embed)
+        self.peak_embed = self._build_mlp(4, config.embed_mlp, self.embed_dim)
         # NOE: shifts(3) → embed_dim
-        self.noe_embed = self._build_mlp(3, config.embed)
+        self.noe_embed = self._build_mlp(3, config.embed_mlp, self.embed_dim)
 
-    def _build_mlp(self, input_dim: int, config: EmbedConfig):
-        """Build an MLP: input_dim → hidden → embed_dim"""
+    def _build_mlp(self, input_dim: int, mlp_config: MLPConfig, output_dim: int):
+        """Build an MLP: input_dim → hidden → output_dim"""
         layers = []
-        layers.append(nn.Linear(input_dim, config.hidden_dim, device=self.device))
+        layers.append(nn.Linear(input_dim, mlp_config.hidden_size, device=self.device))
         layers.append(nn.ReLU())
 
-        for _ in range(config.num_layers - 1):
+        for _ in range(mlp_config.num_layers - 1):
             layers.append(
-                nn.Linear(config.hidden_dim, config.hidden_dim, device=self.device)
+                nn.Linear(mlp_config.hidden_size, mlp_config.hidden_size, device=self.device)
             )
             layers.append(nn.ReLU())
 
         layers.append(
-            nn.Linear(config.hidden_dim, config.embed_dim, device=self.device)
+            nn.Linear(mlp_config.hidden_size, output_dim, device=self.device)
         )
         return nn.Sequential(*layers)
 
@@ -383,9 +344,12 @@ class NMRNet(nn.Module):
         self.config = config
         self.device = device
 
-        # Prediction heads - pass config for dimension calculations
-        self.value = ValueCalc(device, config)
-        self.policy = PolicyCalc(device)
+        # Extract shared parameters
+        embed_dim = config.shared.embed_dim
+
+        # Prediction heads - pass explicit parameters
+        self.value = ValueCalc(embed_dim=embed_dim, value_mlp_config=config.value_mlp, device=device)
+        self.policy = PolicyCalc(embed_dim=embed_dim, device=device)
 
         self.embed_features = EmbedFeatures(device, config)
 

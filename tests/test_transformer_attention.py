@@ -26,6 +26,40 @@ from nmr.models.transformer import (
     SpatialAttentionCore,
     AttentionCore,
 )
+from nmr.models.config import ModelConfig, ShiftStandardizeConfig, MLPConfig, AttentionConfig, SharedConfig
+
+
+def make_config(embed_dim=128, attention_dim=64, num_heads=4):
+    """Helper function to create ModelConfig for tests."""
+    return ModelConfig(
+        shared=SharedConfig(embed_dim=embed_dim),
+        shift_standardize=ShiftStandardizeConfig(),
+        attention=AttentionConfig(attention_dim=attention_dim, num_heads=num_heads),
+    )
+
+
+def make_attention_args(config, device):
+    """
+    Helper to extract attention parameters from config for new explicit signatures.
+
+    Returns dict with embed_dim, attention_config, device that can be unpacked
+    into attention module constructors.
+    """
+    return {
+        "embed_dim": config.shared.embed_dim,
+        "attention_config": config.attention,
+        "device": device,
+    }
+
+
+def make_biaxial_args(config, device):
+    """Helper to extract BiAxial/TriAxial parameters from config."""
+    return {
+        "embed_dim": config.shared.embed_dim,
+        "attention_config": config.attention,
+        "combine_mlp_config": config.combine_mlp,
+        "device": device,
+    }
 
 
 class TestMonoAxialAttention(unittest.TestCase):
@@ -46,14 +80,12 @@ class TestMonoAxialAttention(unittest.TestCase):
         data["Peak"].x = torch.randn(num_peaks, self.channels, device=self.device)
 
         # Create self-attention module for peaks
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = MonoAxialAttention(
             source_type="Peak",
             dest_type="Peak",
-            in_channels=self.channels,
-            out_channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name="self_attn",
+            **make_attention_args(config, self.device)
         )
 
         # Create edges for all-to-all attention
@@ -74,14 +106,12 @@ class TestMonoAxialAttention(unittest.TestCase):
         data = HeteroData()
         data["Peak"].x = torch.zeros(0, self.channels, device=self.device)
 
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = MonoAxialAttention(
             source_type="Peak",
             dest_type="Peak",
-            in_channels=self.channels,
-            out_channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name="self_attn",
+            **make_attention_args(config, self.device)
         )
 
         # Create empty edge index
@@ -105,14 +135,12 @@ class TestMonoAxialAttention(unittest.TestCase):
         )
         data["Peak"].x = input_features
 
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = MonoAxialAttention(
             source_type="Peak",
             dest_type="Peak",
-            in_channels=self.channels,
-            out_channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name="self_attn",
+            **make_attention_args(config, self.device)
         )
 
         # Create edges
@@ -139,14 +167,12 @@ class TestMonoAxialAttention(unittest.TestCase):
         num_peaks = 20  # 2 graphs with 10 peaks each
         data["Peak"].x = torch.randn(num_peaks, self.channels, device=self.device)
 
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = MonoAxialAttention(
             source_type="Peak",
             dest_type="Peak",
-            in_channels=self.channels,
-            out_channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name="self_attn",
+            **make_attention_args(config, self.device)
         )
 
         # Create edges within each graph (0-9 and 10-19)
@@ -177,15 +203,12 @@ class TestMonoAxialAttention(unittest.TestCase):
         data["Residue"].x = torch.randn(num_residues, self.channels, device=self.device)
 
         # Create cross-attention module: Peak -> Residue
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = MonoAxialAttention(
             source_type="Peak",
             dest_type="Residue",
-            in_channels=self.channels,
-            out_channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
             edge_name="cross_attn",
-            device=self.device
+            **make_attention_args(config, self.device)
         )
 
         # Create cross-attention edges (from peaks to residues)
@@ -228,20 +251,16 @@ class TestMonoAxialAttention(unittest.TestCase):
         data["Peak"].x = torch.randn(num_peaks, in_channels, device=self.device)
 
         # Create attention module with different in/out channels
+        config = make_config(embed_dim=in_channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = MonoAxialAttention(
             source_type="Peak",
             dest_type="Peak",
-            in_channels=in_channels,
-            out_channels=out_channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name="self_attn",
+            **make_attention_args(config, self.device)
         )
 
-        # Verify projection layer is Linear (not Identity)
-        self.assertIsInstance(attention.projection, torch.nn.Linear)
-        self.assertEqual(attention.projection.in_features, in_channels)
-        self.assertEqual(attention.projection.out_features, out_channels)
+        # Verify projection layer is Identity when in_channels == out_channels (both are embed_dim)
+        self.assertIsInstance(attention.projection, torch.nn.Identity)
 
         # Create edges
         edge_index = torch.combinations(
@@ -252,8 +271,8 @@ class TestMonoAxialAttention(unittest.TestCase):
         # Forward pass
         output = attention(data)
 
-        # Check output shape matches out_channels
-        expected_shape = (num_peaks, out_channels)
+        # Check output shape matches in_channels (embed_dim)
+        expected_shape = (num_peaks, in_channels)
         self.assertEqual(output["Peak"].x.shape, expected_shape)
 
         # Verify output is not NaN or Inf
@@ -263,14 +282,12 @@ class TestMonoAxialAttention(unittest.TestCase):
     def test_identity_projection(self):
         """Test that Identity is used when in_channels == out_channels."""
         # Create attention module with same in/out channels
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = MonoAxialAttention(
             source_type="Peak",
             dest_type="Peak",
-            in_channels=self.channels,
-            out_channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name="self_attn",
+            **make_attention_args(config, self.device)
         )
 
         # Verify projection layer is Identity (not Linear)
@@ -286,14 +303,12 @@ class TestMonoAxialAttention(unittest.TestCase):
         data["Residue"].xyz = torch.randn(num_residues, 3, device=self.device)
 
         # Create Residue self-attention module
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = MonoAxialAttention(
             source_type="Residue",
             dest_type="Residue",
-            in_channels=self.channels,
-            out_channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name="self_attn",
+            **make_attention_args(config, self.device)
         )
 
         # Create edges for self-attention
@@ -318,14 +333,12 @@ class TestMonoAxialAttention(unittest.TestCase):
         num_residues = 5
 
         # Create attention module
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = MonoAxialAttention(
             source_type="Residue",
             dest_type="Residue",
-            in_channels=self.channels,
-            out_channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name="self_attn",
+            **make_attention_args(config, self.device)
         )
 
         # Create two graphs with same features but different coordinates
@@ -371,14 +384,12 @@ class TestMonoAxialAttention(unittest.TestCase):
         data["Residue"].xyz = coordinates
 
         # Create Residue self-attention module
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = MonoAxialAttention(
             source_type="Residue",
             dest_type="Residue",
-            in_channels=self.channels,
-            out_channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name="self_attn",
+            **make_attention_args(config, self.device)
         )
 
         # Create edges
@@ -406,15 +417,14 @@ class TestMonoAxialAttention(unittest.TestCase):
         """Test that correct attention core is selected based on node types."""
         from nmr.models.transformer import SpatialAttentionCore, AttentionCore
 
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
+
         # Residue-to-Residue: should use SpatialAttentionCore
         residue_attn = MonoAxialAttention(
             source_type="Residue",
             dest_type="Residue",
-            in_channels=self.channels,
-            out_channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name="self_attn",
+            **make_attention_args(config, self.device)
         )
         self.assertIsInstance(
             residue_attn.core,
@@ -426,11 +436,8 @@ class TestMonoAxialAttention(unittest.TestCase):
         peak_attn = MonoAxialAttention(
             source_type="Peak",
             dest_type="Peak",
-            in_channels=self.channels,
-            out_channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name="self_attn",
+            **make_attention_args(config, self.device)
         )
         self.assertIsInstance(
             peak_attn.core,
@@ -442,11 +449,8 @@ class TestMonoAxialAttention(unittest.TestCase):
         cross_attn = MonoAxialAttention(
             source_type="Peak",
             dest_type="Residue",
-            in_channels=self.channels,
-            out_channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name="cross_attn",
+            **make_attention_args(config, self.device)
         )
         self.assertIsInstance(
             cross_attn.core,
@@ -468,14 +472,14 @@ class TestBiAxialAttention(unittest.TestCase):
     def test_biaxial_core_selection_both_spatial(self):
         """Test that both cores use SpatialAttentionCore for Residue-to-Residue."""
         # Both sources and dest are Residue: both cores should be spatial
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Residue",
             dest_type="Residue",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            **make_biaxial_args(config, self.device)
         )
 
         self.assertIsInstance(
@@ -492,14 +496,14 @@ class TestBiAxialAttention(unittest.TestCase):
     def test_biaxial_core_selection_mixed(self):
         """Test mixed core selection: one spatial, one non-spatial."""
         # Source 1 is Residue (spatial), Source 2 is Peak (non-spatial), dest is Residue
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Peak",
             dest_type="Residue",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            **make_biaxial_args(config, self.device)
         )
 
         self.assertIsInstance(
@@ -516,14 +520,14 @@ class TestBiAxialAttention(unittest.TestCase):
     def test_biaxial_core_selection_both_non_spatial(self):
         """Test that both cores use AttentionCore for non-Residue combinations."""
         # Both sources and dest are non-Residue
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = BiAxialAttention(
             source_type_1="Peak",
             source_type_2="Peak",
             dest_type="Noe",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            **make_biaxial_args(config, self.device)
         )
 
         self.assertIsInstance(
@@ -547,14 +551,14 @@ class TestBiAxialAttention(unittest.TestCase):
         data["Residue"].xyz = torch.randn(num_residues, 3, device=self.device)
 
         # Create BiAxial attention module (both streams Residue->Residue)
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Residue",
             dest_type="Residue",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            **make_biaxial_args(config, self.device)
         )
 
         # Create edges for both attention streams
@@ -580,14 +584,14 @@ class TestBiAxialAttention(unittest.TestCase):
         num_residues = 6
 
         # Create attention module
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Residue",
             dest_type="Residue",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            **make_biaxial_args(config, self.device)
         )
 
         # Create two graphs with same features but different coordinates
@@ -639,14 +643,14 @@ class TestBiAxialAttention(unittest.TestCase):
         data["Residue"].xyz = coordinates
 
         # Create BiAxial attention module
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Residue",
             dest_type="Residue",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            **make_biaxial_args(config, self.device)
         )
 
         # Create edges
@@ -694,14 +698,14 @@ class TestBiAxialAttention(unittest.TestCase):
         data[("Peak", "biaxial_attn_2", "Noe")].edge_index = edge_index_2
 
         # Create BiAxial attention module
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = BiAxialAttention(
             source_type_1="Peak",
             source_type_2="Peak",
             dest_type="Noe",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            **make_biaxial_args(config, self.device)
         )
 
         # Should work without xyz coordinates
@@ -727,14 +731,14 @@ class TestBiAxialAttention(unittest.TestCase):
 
         # Create BiAxial attention: Residue->Noe (non-spatial) + Peak->Noe (non-spatial)
         # Note: Even though source is Residue, dest is Noe, so it's non-spatial
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Peak",
             dest_type="Noe",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            **make_biaxial_args(config, self.device)
         )
 
         # Both cores should be non-spatial (dest is not Residue)
@@ -775,15 +779,16 @@ class TestTriAxialAttention(unittest.TestCase):
     def test_triaxial_core_selection_all_spatial(self):
         """Test that all three cores use SpatialAttentionCore for Residue-to-Residue."""
         # All three sources and dest are Residue: all cores should be spatial
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = TriAxialAttention(
             source_type_1="Residue",
             source_type_2="Residue",
             source_type_3="Residue",
             dest_type="Residue",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device,
+            edge_name_1="triaxial_attn_1",
+            edge_name_2="triaxial_attn_2",
+            edge_name_3="triaxial_attn_3",
+            **make_biaxial_args(config, self.device),
         )
 
         self.assertIsInstance(
@@ -805,15 +810,16 @@ class TestTriAxialAttention(unittest.TestCase):
     def test_triaxial_core_selection_mixed(self):
         """Test mixed core selection: two spatial, one non-spatial."""
         # Source 1 and 2 are Residue (spatial), Source 3 is Peak (non-spatial), dest is Residue
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = TriAxialAttention(
             source_type_1="Residue",
             source_type_2="Residue",
             source_type_3="Peak",
             dest_type="Residue",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device,
+            edge_name_1="triaxial_attn_1",
+            edge_name_2="triaxial_attn_2",
+            edge_name_3="triaxial_attn_3",
+            **make_biaxial_args(config, self.device),
         )
 
         self.assertIsInstance(
@@ -835,15 +841,16 @@ class TestTriAxialAttention(unittest.TestCase):
     def test_triaxial_core_selection_all_non_spatial(self):
         """Test that all cores use AttentionCore for non-Residue combinations."""
         # All sources and dest are non-Residue
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = TriAxialAttention(
             source_type_1="Peak",
             source_type_2="Peak",
             source_type_3="Peak",
             dest_type="Noe",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device,
+            edge_name_1="triaxial_attn_1",
+            edge_name_2="triaxial_attn_2",
+            edge_name_3="triaxial_attn_3",
+            **make_biaxial_args(config, self.device),
         )
 
         self.assertIsInstance(
@@ -872,15 +879,16 @@ class TestTriAxialAttention(unittest.TestCase):
         data["Residue"].xyz = torch.randn(num_residues, 3, device=self.device)
 
         # Create TriAxial attention module (all three streams Residue->Residue)
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = TriAxialAttention(
             source_type_1="Residue",
             source_type_2="Residue",
             source_type_3="Residue",
             dest_type="Residue",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device,
+            edge_name_1="triaxial_attn_1",
+            edge_name_2="triaxial_attn_2",
+            edge_name_3="triaxial_attn_3",
+            **make_biaxial_args(config, self.device),
         )
 
         # Create edges for all three attention streams
@@ -905,15 +913,16 @@ class TestTriAxialAttention(unittest.TestCase):
         num_residues = 6
 
         # Create attention module
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = TriAxialAttention(
             source_type_1="Residue",
             source_type_2="Residue",
             source_type_3="Residue",
             dest_type="Residue",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device,
+            edge_name_1="triaxial_attn_1",
+            edge_name_2="triaxial_attn_2",
+            edge_name_3="triaxial_attn_3",
+            **make_biaxial_args(config, self.device),
         )
 
         # Create two graphs with same features but different coordinates
@@ -965,15 +974,16 @@ class TestTriAxialAttention(unittest.TestCase):
         data["Residue"].xyz = coordinates
 
         # Create TriAxial attention module
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = TriAxialAttention(
             source_type_1="Residue",
             source_type_2="Residue",
             source_type_3="Residue",
             dest_type="Residue",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device,
+            edge_name_1="triaxial_attn_1",
+            edge_name_2="triaxial_attn_2",
+            edge_name_3="triaxial_attn_3",
+            **make_biaxial_args(config, self.device),
         )
 
         # Create edges
@@ -1025,15 +1035,16 @@ class TestTriAxialAttention(unittest.TestCase):
         data[("Peak", "triaxial_attn_3", "Noe")].edge_index = edge_index_3
 
         # Create TriAxial attention module
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = TriAxialAttention(
             source_type_1="Peak",
             source_type_2="Peak",
             source_type_3="Peak",
             dest_type="Noe",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device,
+            edge_name_1="triaxial_attn_1",
+            edge_name_2="triaxial_attn_2",
+            edge_name_3="triaxial_attn_3",
+            **make_biaxial_args(config, self.device),
         )
 
         # Should work without xyz coordinates
@@ -1059,15 +1070,16 @@ class TestTriAxialAttention(unittest.TestCase):
 
         # Create TriAxial attention: Residue->Noe (non-spatial) + Residue->Noe (non-spatial) + Peak->Noe (non-spatial)
         # Note: Even though sources are Residue, dest is Noe, so all streams are non-spatial
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = TriAxialAttention(
             source_type_1="Residue",
             source_type_2="Residue",
             source_type_3="Peak",
             dest_type="Noe",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device,
+            edge_name_1="triaxial_attn_1",
+            edge_name_2="triaxial_attn_2",
+            edge_name_3="triaxial_attn_3",
+            **make_biaxial_args(config, self.device),
         )
 
         # All cores should be non-spatial (dest is not Residue)
@@ -1108,15 +1120,16 @@ class TestTriAxialAttention(unittest.TestCase):
         data["Peak"].x = torch.zeros(0, self.channels, device=self.device)
         data["Noe"].x = torch.zeros(0, self.channels, device=self.device)
 
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = TriAxialAttention(
             source_type_1="Peak",
             source_type_2="Peak",
             source_type_3="Peak",
             dest_type="Noe",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device,
+            edge_name_1="triaxial_attn_1",
+            edge_name_2="triaxial_attn_2",
+            edge_name_3="triaxial_attn_3",
+            **make_biaxial_args(config, self.device),
         )
 
         # Create empty edge indices
@@ -1147,15 +1160,16 @@ class TestTriAxialAttention(unittest.TestCase):
         data["Peak"].x = torch.randn(num_peaks, self.channels, device=self.device)
         data["Noe"].x = torch.randn(num_noes, self.channels, device=self.device)
 
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         attention = TriAxialAttention(
             source_type_1="Peak",
             source_type_2="Peak",
             source_type_3="Peak",
             dest_type="Noe",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            device=self.device,
+            edge_name_1="triaxial_attn_1",
+            edge_name_2="triaxial_attn_2",
+            edge_name_3="triaxial_attn_3",
+            **make_biaxial_args(config, self.device),
         )
 
         # Create empty edge indices (at least one empty to trigger early return)

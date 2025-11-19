@@ -20,6 +20,16 @@ import unittest
 
 import torch
 from nmr.models.transformer import SpatialAttentionCore
+from nmr.models.config import SharedConfig, ModelConfig, ShiftStandardizeConfig, MLPConfig, AttentionConfig
+
+
+def make_config(embed_dim=128, attention_dim=64, num_heads=4):
+    """Helper function to create ModelConfig for tests."""
+    return ModelConfig(
+        shared=SharedConfig(embed_dim=embed_dim),
+        shift_standardize=ShiftStandardizeConfig(),
+        attention=AttentionConfig(attention_dim=attention_dim, num_heads=num_heads),
+    )
 
 
 class TestSpatialAttentionCoreInitialization(unittest.TestCase):
@@ -27,8 +37,9 @@ class TestSpatialAttentionCoreInitialization(unittest.TestCase):
 
     def test_initialization_single_head(self):
         """Test that SpatialAttentionCore initializes correctly with single head."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=1)
         core = SpatialAttentionCore(
-            in_channels=64, out_channels=64, head_dim=16, heads=1, device="cpu"
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, device="cpu"
         )
 
         # Check parameter shapes
@@ -40,8 +51,9 @@ class TestSpatialAttentionCoreInitialization(unittest.TestCase):
 
     def test_initialization_multi_head(self):
         """Test that SpatialAttentionCore initializes correctly with multiple heads."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         core = SpatialAttentionCore(
-            in_channels=64, out_channels=64, head_dim=16, heads=4, device="cpu"
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, device="cpu"
         )
 
         # Check parameter shapes for multi-head
@@ -52,9 +64,10 @@ class TestSpatialAttentionCoreInitialization(unittest.TestCase):
         self.assertEqual(core.out_proj.weight.shape, (64, 64))
 
     def test_initialization_different_channels(self):
-        """Test initialization with different input and output channels."""
+        """Test initialization with embed_dim."""
+        config = make_config(embed_dim=32, attention_dim=16, num_heads=4)
         core = SpatialAttentionCore(
-            in_channels=32, out_channels=128, head_dim=16, heads=4, device="cpu"
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, device="cpu"
         )
 
         # Check parameter shapes
@@ -62,12 +75,13 @@ class TestSpatialAttentionCoreInitialization(unittest.TestCase):
         self.assertEqual(core.lin_source.weight.shape, (64, 32))
         self.assertEqual(core.lin_dist.weight.shape, (64, 1))
         self.assertEqual(core.att.shape, (1, 4, 16))
-        self.assertEqual(core.out_proj.weight.shape, (128, 64))
+        self.assertEqual(core.out_proj.weight.shape, (32, 64))
 
     def test_normalization_layers(self):
         """Test that pre-normalization layers are initialized correctly."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         core = SpatialAttentionCore(
-            in_channels=64, out_channels=64, head_dim=16, heads=4, device="cpu"
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, device="cpu"
         )
 
         # Check normalization layers exist and have correct shapes
@@ -82,8 +96,9 @@ class TestSpatialAttentionCoreForward(unittest.TestCase):
 
     def test_forward_basic(self):
         """Test basic forward pass with same source and dest (self-attention)."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         core = SpatialAttentionCore(
-            in_channels=64, out_channels=64, head_dim=16, heads=4, device="cpu"
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, device="cpu"
         )
 
         # Create test data
@@ -101,8 +116,9 @@ class TestSpatialAttentionCoreForward(unittest.TestCase):
 
     def test_forward_cross_attention(self):
         """Test forward pass with different source and dest (cross-attention)."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         core = SpatialAttentionCore(
-            in_channels=64, out_channels=64, head_dim=16, heads=4, device="cpu"
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, device="cpu"
         )
 
         # Create test data with different numbers of source and dest nodes
@@ -123,9 +139,10 @@ class TestSpatialAttentionCoreForward(unittest.TestCase):
         self.assertEqual(delta.shape, (num_dest, 64))
 
     def test_forward_different_output_channels(self):
-        """Test forward pass with different input/output channels."""
+        """Test forward pass with different embed_dim."""
+        config = make_config(embed_dim=32, attention_dim=16, num_heads=4)
         core = SpatialAttentionCore(
-            in_channels=32, out_channels=128, head_dim=16, heads=4, device="cpu"
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, device="cpu"
         )
 
         # Create test data
@@ -138,13 +155,14 @@ class TestSpatialAttentionCoreForward(unittest.TestCase):
         # Forward pass
         delta = core.forward(x, x, xyz, xyz, edge_index)
 
-        # Check output shape has correct output channels
-        self.assertEqual(delta.shape, (num_nodes, 128))
+        # Check output shape has correct embed_dim
+        self.assertEqual(delta.shape, (num_nodes, 32))
 
     def test_forward_single_head(self):
         """Test forward pass with single attention head."""
+        config = make_config(embed_dim=64, attention_dim=32, num_heads=1)
         core = SpatialAttentionCore(
-            in_channels=64, out_channels=64, head_dim=32, heads=1, device="cpu"
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, device="cpu"
         )
 
         # Create test data
@@ -162,8 +180,9 @@ class TestSpatialAttentionCoreForward(unittest.TestCase):
 
     def test_forward_empty_edges(self):
         """Test forward pass with empty edge set."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         core = SpatialAttentionCore(
-            in_channels=64, out_channels=64, head_dim=16, heads=4, device="cpu"
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, device="cpu"
         )
 
         # Create test data with no edges
@@ -182,8 +201,9 @@ class TestSpatialAttentionCoreForward(unittest.TestCase):
 
     def test_forward_small_graph(self):
         """Test forward pass with very small graph (edge case)."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         core = SpatialAttentionCore(
-            in_channels=64, out_channels=64, head_dim=16, heads=4, device="cpu"
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, device="cpu"
         )
 
         # Create test data with only 2 nodes
@@ -205,8 +225,9 @@ class TestSpatialAttentionCoreGradients(unittest.TestCase):
 
     def test_gradient_flow(self):
         """Test that gradients flow through all parameters."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         core = SpatialAttentionCore(
-            in_channels=64, out_channels=64, head_dim=16, heads=4, device="cpu"
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, device="cpu"
         )
 
         # Create test data
@@ -236,8 +257,9 @@ class TestSpatialAttentionCoreGradients(unittest.TestCase):
 
     def test_gradient_flow_through_distance(self):
         """Test that gradients flow through the distance computation."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         core = SpatialAttentionCore(
-            in_channels=64, out_channels=64, head_dim=16, heads=4, device="cpu"
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, device="cpu"
         )
 
         # Create test data
@@ -265,8 +287,9 @@ class TestSpatialAttentionCoreDistanceAwareness(unittest.TestCase):
 
     def test_distance_affects_output(self):
         """Test that changing coordinates affects the output."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         core = SpatialAttentionCore(
-            in_channels=64, out_channels=64, head_dim=16, heads=4, device="cpu"
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, device="cpu"
         )
 
         # Create test data
@@ -292,8 +315,9 @@ class TestSpatialAttentionCoreDistanceAwareness(unittest.TestCase):
 
     def test_identical_coordinates_with_different_features(self):
         """Test behavior when coordinates are identical but features differ."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         core = SpatialAttentionCore(
-            in_channels=64, out_channels=64, head_dim=16, heads=4, device="cpu"
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, device="cpu"
         )
 
         # Create test data
@@ -317,29 +341,26 @@ class TestSpatialAttentionCoreShape(unittest.TestCase):
 
     def test_output_shape_matches_spec(self):
         """Test that output shape always matches specification."""
-        configs = [
-            (32, 64, 16, 1),  # (in_channels, out_channels, head_dim, heads)
-            (64, 64, 16, 4),
-            (64, 128, 32, 2),
-            (128, 64, 16, 8),
+        test_configs = [
+            (32, 16, 1),  # (embed_dim, attention_dim, num_heads)
+            (64, 16, 4),
+            (64, 32, 2),
+            (128, 16, 8),
         ]
 
-        for in_ch, out_ch, head_dim, heads in configs:
+        for embed_dim, attention_dim, num_heads in test_configs:
             with self.subTest(
-                in_channels=in_ch, out_channels=out_ch, head_dim=head_dim, heads=heads
+                embed_dim=embed_dim, attention_dim=attention_dim, num_heads=num_heads
             ):
+                config = make_config(embed_dim=embed_dim, attention_dim=attention_dim, num_heads=num_heads)
                 core = SpatialAttentionCore(
-                    in_channels=in_ch,
-                    out_channels=out_ch,
-                    head_dim=head_dim,
-                    heads=heads,
-                    device="cpu",
+                    embed_dim=config.shared.embed_dim, attention_config=config.attention, device="cpu",
                 )
 
                 # Create test data
                 num_nodes = 50
                 num_edges = 100
-                x = torch.randn(num_nodes, in_ch)
+                x = torch.randn(num_nodes, embed_dim)
                 xyz = torch.randn(num_nodes, 3)
                 edge_index = torch.randint(0, num_nodes, (2, num_edges))
 
@@ -347,7 +368,7 @@ class TestSpatialAttentionCoreShape(unittest.TestCase):
                 delta = core.forward(x, x, xyz, xyz, edge_index)
 
                 # Check output shape
-                self.assertEqual(delta.shape, (num_nodes, out_ch))
+                self.assertEqual(delta.shape, (num_nodes, embed_dim))
 
 
 class TestSpatialAttentionCoreComparison(unittest.TestCase):
@@ -355,8 +376,9 @@ class TestSpatialAttentionCoreComparison(unittest.TestCase):
 
     def test_returns_delta_not_residual(self):
         """Test that SpatialAttentionCore returns delta, not x + delta."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         core = SpatialAttentionCore(
-            in_channels=64, out_channels=64, head_dim=16, heads=4, device="cpu"
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, device="cpu"
         )
 
         # Create test data

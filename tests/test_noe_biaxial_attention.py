@@ -21,6 +21,16 @@ import torch
 from torch_geometric.data import HeteroData
 
 from nmr.models.transformer import BiAxialAttention
+from nmr.models.config import SharedConfig, ModelConfig, ShiftStandardizeConfig, MLPConfig, AttentionConfig
+
+
+def make_config(embed_dim=128, attention_dim=64, num_heads=4):
+    """Helper function to create ModelConfig for tests."""
+    return ModelConfig(
+        shared=SharedConfig(embed_dim=embed_dim),
+        shift_standardize=ShiftStandardizeConfig(),
+        attention=AttentionConfig(attention_dim=attention_dim, num_heads=num_heads),
+    )
 
 
 class TestBiAxialAttentionInitialization(unittest.TestCase):
@@ -29,15 +39,14 @@ class TestBiAxialAttentionInitialization(unittest.TestCase):
     def test_initialization(self):
         """Test that BiAxialAttention initializes correctly."""
         # Create module
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         module = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Peak",
             dest_type="Noe",
-            channels=64,
-            head_dim=16,
-            heads=4,
-            negative_slope=0.2,
-            device="cpu",
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
         )
 
         # Verify it's an nn.Module
@@ -69,15 +78,14 @@ class TestBiAxialAttentionForward(unittest.TestCase):
         self.head_dim = 16
         self.heads = 4
 
+        config = make_config(embed_dim=self.channels, attention_dim=self.head_dim, num_heads=self.heads)
         self.module = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Peak",
             dest_type="Noe",
-            channels=self.channels,
-            head_dim=self.head_dim,
-            heads=self.heads,
-            negative_slope=0.2,
-            device="cpu",
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
         )
 
     def test_forward_basic(self):
@@ -200,15 +208,14 @@ class TestBiAxialAttentionFeatureCombination(unittest.TestCase):
 
     def test_residual_connection(self):
         """Test that residual connection is applied correctly."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         module = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Peak",
             dest_type="Noe",
-            channels=64,
-            head_dim=16,
-            heads=4,
-            negative_slope=0.2,
-            device="cpu",
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
         )
 
         # Create simple graph
@@ -245,15 +252,14 @@ class TestBiAxialAttentionFeatureCombination(unittest.TestCase):
         """Test that dimensions remain consistent throughout forward pass."""
         channels = 64
 
+        config = make_config(embed_dim=channels, attention_dim=16, num_heads=4)
         module = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Peak",
             dest_type="Noe",
-            channels=channels,
-            head_dim=16,
-            heads=4,
-            negative_slope=0.2,
-            device="cpu",
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
         )
 
         # Create graph
@@ -286,15 +292,14 @@ class TestBiAxialAttentionEdgeCases(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         self.module = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Peak",
             dest_type="Noe",
-            channels=64,
-            head_dim=16,
-            heads=4,
-            negative_slope=0.2,
-            device="cpu",
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
         )
 
     def test_zero_edges_attention_1(self):
@@ -379,14 +384,14 @@ class TestBiAxialAttentionRealisticGraphs(unittest.TestCase):
 
         for num_noes, num_residues, num_peaks in test_cases:
             with self.subTest(noes=num_noes, residues=num_residues, peaks=num_peaks):
+                config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
                 module = BiAxialAttention(
                     source_type_1="Residue",
                     source_type_2="Peak",
                     dest_type="Noe",
-                    channels=64,
-                    head_dim=16,
-                    heads=4,
-                    device="cpu",
+                    edge_name_1="biaxial_attn_1",
+                    edge_name_2="biaxial_attn_2",
+                    embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
                 )
 
                 data = HeteroData()
@@ -413,14 +418,14 @@ class TestBiAxialAttentionRealisticGraphs(unittest.TestCase):
 
     def test_sparse_edge_connectivity(self):
         """Test with sparse edge connectivity (not fully connected)."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         module = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Peak",
             dest_type="Noe",
-            channels=64,
-            head_dim=16,
-            heads=4,
-            device="cpu",
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
         )
 
         data = HeteroData()
@@ -454,14 +459,14 @@ class TestBiAxialAttentionDimensionFlow(unittest.TestCase):
         channels = 64
         num_noes = 5
 
+        config = make_config(embed_dim=channels, attention_dim=16, num_heads=4)
         module = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Peak",
             dest_type="Noe",
-            channels=channels,
-            head_dim=16,
-            heads=4,
-            device="cpu",
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
         )
 
         # Create graph
@@ -515,14 +520,14 @@ class TestBiAxialAttentionIntegration(unittest.TestCase):
 
     def test_device_consistency_cpu(self):
         """Test that module works correctly on CPU device."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         module = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Peak",
             dest_type="Noe",
-            channels=64,
-            head_dim=16,
-            heads=4,
-            device="cpu",
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
         )
 
         data = HeteroData()
@@ -546,14 +551,14 @@ class TestBiAxialAttentionIntegration(unittest.TestCase):
 
     def test_module_list_compatibility(self):
         """Test that module can be added to nn.ModuleList."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         module = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Peak",
             dest_type="Noe",
-            channels=64,
-            head_dim=16,
-            heads=4,
-            device="cpu",
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
         )
 
         # Should be compatible with nn.ModuleList
@@ -563,24 +568,23 @@ class TestBiAxialAttentionIntegration(unittest.TestCase):
 
     def test_sequential_compatibility(self):
         """Test that module can be used in sequential operations."""
+        config = make_config(embed_dim=64, attention_dim=16, num_heads=4)
         module1 = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Peak",
             dest_type="Noe",
-            channels=64,
-            head_dim=16,
-            heads=4,
-            device="cpu",
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
         )
 
         module2 = BiAxialAttention(
             source_type_1="Residue",
             source_type_2="Peak",
             dest_type="Noe",
-            channels=64,
-            head_dim=16,
-            heads=4,
-            device="cpu",
+            edge_name_1="biaxial_attn_1",
+            edge_name_2="biaxial_attn_2",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
         )
 
         # Create graph

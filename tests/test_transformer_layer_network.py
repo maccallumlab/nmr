@@ -22,15 +22,18 @@ from torch_geometric.data import HeteroData
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from nmr.construct import construct_graph
-from nmr.models.network import (
+from nmr.models.config import (
     ModelConfig,
-    EmbedConfig,
+    SharedConfig,
+    ShiftStandardizeConfig,
     MLPConfig,
+    AttentionConfig,
+)
+from nmr.models.network import (
     NMRLayer,
     NMRTransformerLayer,
     NMRNet,
 )
-from nmr.models.transformer import AttentionConfig
 
 
 class TestNMRTransformerLayer(unittest.TestCase):
@@ -42,8 +45,8 @@ class TestNMRTransformerLayer(unittest.TestCase):
         self.config = ModelConfig(
             num_nmr_layers=1,
             layer_type="transformer",
-            embed=EmbedConfig(embed_dim=64),
-            mlp=MLPConfig(hidden_size=32, num_layers=1),
+            shared=SharedConfig(embed_dim=64),
+            shift_standardize=ShiftStandardizeConfig(),
             attention=AttentionConfig(num_heads=2, attention_dim=32),
         )
 
@@ -172,8 +175,8 @@ class TestNMRTransformerLayer(unittest.TestCase):
         transformer_config = ModelConfig(
             num_nmr_layers=1,
             layer_type="transformer",
-            embed=EmbedConfig(embed_dim=64),
-            mlp=MLPConfig(hidden_size=32, num_layers=1),
+            shared=SharedConfig(embed_dim=64),
+            shift_standardize=ShiftStandardizeConfig(),
             attention=AttentionConfig(num_heads=2, attention_dim=32),
         )
         data_transformer = construct_graph(history, self.device, transformer_config)
@@ -184,8 +187,8 @@ class TestNMRTransformerLayer(unittest.TestCase):
         triple_config = ModelConfig(
             num_nmr_layers=1,
             layer_type="triple",
-            embed=EmbedConfig(embed_dim=64),
-            mlp=MLPConfig(hidden_size=32, num_layers=1),
+            shared=SharedConfig(embed_dim=64),
+            shift_standardize=ShiftStandardizeConfig(),
         )
         data_triple = construct_graph(history, self.device, triple_config)
         triple_layer = NMRLayer(self.device, triple_config)
@@ -218,8 +221,8 @@ class TestNMRNetWithTransformer(unittest.TestCase):
         config = ModelConfig(
             num_nmr_layers=2,
             layer_type="transformer",
-            embed=EmbedConfig(embed_dim=64),
-            mlp=MLPConfig(hidden_size=32, num_layers=1),
+            shared=SharedConfig(embed_dim=64),
+            shift_standardize=ShiftStandardizeConfig(),
             attention=AttentionConfig(num_heads=2, attention_dim=32),
         )
 
@@ -234,8 +237,8 @@ class TestNMRNetWithTransformer(unittest.TestCase):
         config = ModelConfig(
             num_nmr_layers=1,
             layer_type="transformer",
-            embed=EmbedConfig(embed_dim=64),
-            mlp=MLPConfig(hidden_size=32, num_layers=1),
+            shared=SharedConfig(embed_dim=64),
+            shift_standardize=ShiftStandardizeConfig(),
             attention=AttentionConfig(num_heads=2, attention_dim=32),
         )
 
@@ -264,8 +267,8 @@ class TestNMRNetWithTransformer(unittest.TestCase):
         config = ModelConfig(
             num_nmr_layers=3,
             layer_type="transformer",
-            embed=EmbedConfig(embed_dim=64),
-            mlp=MLPConfig(hidden_size=32, num_layers=1),
+            shared=SharedConfig(embed_dim=64),
+            shift_standardize=ShiftStandardizeConfig(),
             attention=AttentionConfig(num_heads=2, attention_dim=32),
         )
 
@@ -291,8 +294,8 @@ class TestNMRNetWithTransformer(unittest.TestCase):
         config = ModelConfig(
             num_nmr_layers=2,
             layer_type="transformer",
-            embed=EmbedConfig(embed_dim=64),
-            mlp=MLPConfig(hidden_size=32, num_layers=1),
+            shared=SharedConfig(embed_dim=64),
+            shift_standardize=ShiftStandardizeConfig(),
             attention=AttentionConfig(num_heads=2, attention_dim=32),
         )
 
@@ -337,8 +340,8 @@ class TestArchitectureSelection(unittest.TestCase):
         config = ModelConfig(
             num_nmr_layers=1,
             layer_type="triple",
-            embed=EmbedConfig(embed_dim=64),
-            mlp=MLPConfig(hidden_size=32, num_layers=1),
+            shared=SharedConfig(embed_dim=64),
+            shift_standardize=ShiftStandardizeConfig(),
         )
 
         net = NMRNet(self.device, config)
@@ -351,8 +354,8 @@ class TestArchitectureSelection(unittest.TestCase):
         config = ModelConfig(
             num_nmr_layers=1,
             layer_type="transformer",
-            embed=EmbedConfig(embed_dim=64),
-            mlp=MLPConfig(hidden_size=32, num_layers=1),
+            shared=SharedConfig(embed_dim=64),
+            shift_standardize=ShiftStandardizeConfig(),
             attention=AttentionConfig(num_heads=2, attention_dim=32),
         )
 
@@ -366,7 +369,8 @@ class TestArchitectureSelection(unittest.TestCase):
         config = ModelConfig(
             num_nmr_layers=1,
             layer_type="invalid",
-            embed=EmbedConfig(embed_dim=64),
+            shared=SharedConfig(embed_dim=64),
+            shift_standardize=ShiftStandardizeConfig(),
         )
 
         with self.assertRaises(ValueError) as context:
@@ -388,8 +392,8 @@ class TestArchitectureSelection(unittest.TestCase):
         triple_config = ModelConfig(
             num_nmr_layers=1,
             layer_type="triple",
-            embed=EmbedConfig(embed_dim=64),
-            mlp=MLPConfig(hidden_size=32, num_layers=1),
+            shared=SharedConfig(embed_dim=64),
+            shift_standardize=ShiftStandardizeConfig(),
         )
         data_triple = construct_graph(history, self.device, triple_config)
         net_triple = NMRNet(self.device, triple_config)
@@ -399,8 +403,8 @@ class TestArchitectureSelection(unittest.TestCase):
         transformer_config = ModelConfig(
             num_nmr_layers=1,
             layer_type="transformer",
-            embed=EmbedConfig(embed_dim=64),
-            mlp=MLPConfig(hidden_size=32, num_layers=1),
+            shared=SharedConfig(embed_dim=64),
+            shift_standardize=ShiftStandardizeConfig(),
             attention=AttentionConfig(num_heads=2, attention_dim=32),
         )
         data_transformer = construct_graph(history, self.device, transformer_config)
@@ -426,8 +430,8 @@ class TestArchitectureSelection(unittest.TestCase):
         triple_config = ModelConfig(
             num_nmr_layers=2,
             layer_type="triple",
-            embed=EmbedConfig(embed_dim=64),
-            mlp=MLPConfig(hidden_size=32, num_layers=1),
+            shared=SharedConfig(embed_dim=64),
+            shift_standardize=ShiftStandardizeConfig(),
         )
         data_triple = construct_graph(history, self.device, triple_config)
         net_triple = NMRNet(self.device, triple_config)
@@ -437,8 +441,8 @@ class TestArchitectureSelection(unittest.TestCase):
         transformer_config = ModelConfig(
             num_nmr_layers=2,
             layer_type="transformer",
-            embed=EmbedConfig(embed_dim=64),
-            mlp=MLPConfig(hidden_size=32, num_layers=1),
+            shared=SharedConfig(embed_dim=64),
+            shift_standardize=ShiftStandardizeConfig(),
             attention=AttentionConfig(num_heads=2, attention_dim=32),
         )
         data_transformer = construct_graph(history, self.device, transformer_config)

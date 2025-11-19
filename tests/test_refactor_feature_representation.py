@@ -176,7 +176,7 @@ class TestRefactoredAttributeStructure(unittest.TestCase):
         # Residue.x should be [n, embed_dim] (embedded features only)
         self.assertEqual(data['Residue'].x.ndim, 2)
         self.assertEqual(data['Residue'].x.shape[0], 2)
-        self.assertEqual(data['Residue'].x.shape[1], self.config.embed.embed_dim)
+        self.assertEqual(data['Residue'].x.shape[1], self.config.shared.embed_dim)
 
         # Peak.x should be [n, embed_dim]
         self.assertEqual(data['Peak'].x.ndim, 2)

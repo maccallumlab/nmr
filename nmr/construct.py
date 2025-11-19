@@ -183,7 +183,7 @@ def _construct_data_nodes(
 
     # Initialize .x attributes to zeros so PyG can batch/unbatch them
     # EmbedFeatures layer will overwrite these with actual embeddings
-    embed_dim = config.embed.embed_dim
+    embed_dim = config.shared.embed_dim
     data["Residue"].x = torch.zeros(
         (len(coords), embed_dim), dtype=torch.float32, device=device
     )
@@ -217,7 +217,7 @@ def _construct_triple_nodes(
     num_noe = len(data["Noe"].shifts)
     num_peak = len(data["Peak"].shifts)
     num_residue = len(data["Residue"].xyz)
-    embed_dim = config.embed.embed_dim
+    embed_dim = config.shared.embed_dim
 
     # ResidueResidueNoeTriple: All combinations of (residue_i, residue_j, noe_k)
     num_res_res_noe = num_residue * num_residue * num_noe
@@ -263,7 +263,7 @@ def _construct_value_nodes(
     Returns:
         HeteroData with value nodes added
     """
-    embed_dim = config.embed.embed_dim
+    embed_dim = config.shared.embed_dim
     data["VALUE_NOE"].x = torch.zeros(
         (1, embed_dim), dtype=torch.float32, device=device
     )

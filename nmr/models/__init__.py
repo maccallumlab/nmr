@@ -9,9 +9,15 @@ using heterogeneous graph neural networks with triple-based message passing.
 from .network import (
     NMRLayer,
     NMRNet,
-    ModelConfig,
-    EmbedConfig,
+)
+
+# Configuration
+from .config import (
+    SharedConfig,
+    ShiftStandardizeConfig,
     MLPConfig,
+    AttentionConfig,
+    ModelConfig,
 )
 
 # Triple message passing - modular architecture with parameterized components
@@ -42,9 +48,11 @@ __all__ = [
     "NMRLayer",
     "NMRNet",
     # Configuration
-    "ModelConfig",
-    "EmbedConfig",
+    "SharedConfig",
+    "ShiftStandardizeConfig",
     "MLPConfig",
+    "AttentionConfig",
+    "ModelConfig",
     # Gather components
     "GatherToTriple",
     "NoeGather",

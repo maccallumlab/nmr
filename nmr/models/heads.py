@@ -21,13 +21,18 @@ class BatchMessagePass(MessagePassing):
     - Residue.x: [embed_dim]
     """
 
-    def __init__(self, aggr, device, config):
+    def __init__(self, aggr, embed_dim: int, device):
+        """
+        Initialize BatchMessagePass with explicit parameters.
+
+        Args:
+            aggr: Aggregation method ('mean', 'sum', etc.)
+            embed_dim: Input feature dimension
+            device: torch device (CPU or CUDA)
+        """
         super().__init__(aggr=aggr)
         self.device = device
-        self.config = config
-
-        # All nodes have the same dimension after embedding
-        embed_dim = config.embed.embed_dim
+        self.embed_dim = embed_dim
         self.reduce = nn.Linear(embed_dim, 1, device=self.device)
 
     def forward(self, x_source, x_target, edge_index):
@@ -54,19 +59,26 @@ class ValueCalc(nn.Module):
     a scalar value representing the quality of the current state.
     """
 
-    def __init__(self, device, config):
+    def __init__(self, embed_dim: int, value_mlp_config, device):
+        """
+        Initialize ValueCalc with explicit parameters.
+
+        Args:
+            embed_dim: Input feature dimension
+            value_mlp_config: MLPConfig for value MLP
+            device: torch device (CPU or CUDA)
+        """
         super().__init__()
         self.device = device
-        self.config = config
+        self.embed_dim = embed_dim
 
-        self.batch_message = BatchMessagePass(aggr="mean", device=self.device, config=config)
-        self.hidden = 64
+        self.batch_message = BatchMessagePass(aggr="mean", embed_dim=embed_dim, device=self.device)
 
         self.testmlp = nn.Sequential(
-            nn.Linear(3, self.hidden, device=self.device),
-            nn.LayerNorm(self.hidden, device=self.device),
+            nn.Linear(3, value_mlp_config.hidden_size, device=self.device),
+            nn.LayerNorm(value_mlp_config.hidden_size, device=self.device),
             nn.ReLU(),
-            nn.Linear(self.hidden, 1, device=self.device),
+            nn.Linear(value_mlp_config.hidden_size, 1, device=self.device),
         )
 
     def get_aggr(self, x_source, x_target, edge_index):
@@ -120,9 +132,17 @@ class PolicyCalc(nn.Module):
     Policy is computed by comparing the entire embedded feature vectors using dot products.
     """
 
-    def __init__(self, device):
+    def __init__(self, embed_dim: int, device):
+        """
+        Initialize PolicyCalc with explicit parameters.
+
+        Args:
+            embed_dim: Input feature dimension
+            device: torch device (CPU or CUDA)
+        """
         super().__init__()
         self.device = device
+        self.embed_dim = embed_dim
 
     def calc_policy(self, data):
         """
