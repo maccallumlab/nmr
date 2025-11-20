@@ -413,6 +413,7 @@ class MonoAxialAttention(nn.Module):
         edge_name: str,
         embed_dim: int,
         attention_config: AttentionConfig,
+        feedforward_mlp_config: MLPConfig,
         device,
     ):
         """
@@ -424,6 +425,7 @@ class MonoAxialAttention(nn.Module):
             edge_name: Name for edge type (e.g., "self_attn", "noe_res_attn")
             embed_dim: Input/output feature dimension
             attention_config: AttentionConfig containing attention_dim and num_heads
+            feedforward_mlp_config: MLPConfig for feedforward transformation
             device: torch device (CPU or CUDA)
         """
         super().__init__()
@@ -455,6 +457,10 @@ class MonoAxialAttention(nn.Module):
         else:
             self.projection = nn.Identity()
 
+        # Feedforward components (pre-normalization pattern)
+        self.norm_feedforward = nn.LayerNorm(embed_dim, device=device)
+        self.feedforward_mlp = MLP(embed_dim, embed_dim, feedforward_mlp_config, device)
+
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -467,7 +473,7 @@ class MonoAxialAttention(nn.Module):
 
     def forward(self, data):
         """
-        Apply attention to nodes in HeteroData graph.
+        Apply attention to nodes in HeteroData graph, followed by feedforward transformation.
 
         Args:
             data: HeteroData graph with node features in .x attribute
@@ -502,6 +508,10 @@ class MonoAxialAttention(nn.Module):
 
         # Apply residual connection with projection: x_new = projection(x_old) + attention_output
         data[self.dest_type].x = self.projection(x_dest) + delta
+
+        # Apply feedforward step with pre-normalization: x = x + mlp(Norm(x))
+        x = data[self.dest_type].x
+        data[self.dest_type].x = x + self.feedforward_mlp(self.norm_feedforward(x))
 
         return data
 
@@ -567,6 +577,7 @@ class BiAxialAttention(nn.Module):
         embed_dim: int,
         attention_config: AttentionConfig,
         combine_mlp_config: MLPConfig,
+        feedforward_mlp_config: MLPConfig,
         device,
     ):
         """
@@ -585,6 +596,7 @@ class BiAxialAttention(nn.Module):
             embed_dim: Input/output feature dimension
             attention_config: AttentionConfig containing attention_dim and num_heads
             combine_mlp_config: MLPConfig for combination MLP
+            feedforward_mlp_config: MLPConfig for feedforward transformation
             device: torch device (CPU or CUDA) for parameter initialization and computation.
         """
         super().__init__()
@@ -629,6 +641,10 @@ class BiAxialAttention(nn.Module):
         mlp_input_size = embed_dim * 3
         self.combine_mlp = MLP(mlp_input_size, embed_dim, combine_mlp_config, device)
 
+        # Feedforward components (pre-normalization pattern)
+        self.norm_feedforward = nn.LayerNorm(embed_dim, device=device)
+        self.feedforward_mlp = MLP(embed_dim, embed_dim, feedforward_mlp_config, device)
+
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -642,7 +658,7 @@ class BiAxialAttention(nn.Module):
 
     def forward(self, data):
         """
-        Apply biaxial attention to destination nodes.
+        Apply biaxial attention to destination nodes, followed by feedforward transformation.
 
         Args:
             data: HeteroData graph with node features (.x) and edge indices
@@ -700,6 +716,10 @@ class BiAxialAttention(nn.Module):
 
         # Apply residual update
         data[self.dest_type].x = dest_x + delta
+
+        # Apply feedforward step with pre-normalization: x = x + mlp(Norm(x))
+        x = data[self.dest_type].x
+        data[self.dest_type].x = x + self.feedforward_mlp(self.norm_feedforward(x))
 
         return data
 
@@ -769,6 +789,7 @@ class TriAxialAttention(nn.Module):
         embed_dim: int,
         attention_config: AttentionConfig,
         combine_mlp_config: MLPConfig,
+        feedforward_mlp_config: MLPConfig,
         device,
     ):
         """
@@ -789,6 +810,7 @@ class TriAxialAttention(nn.Module):
             embed_dim: Input/output feature dimension
             attention_config: AttentionConfig containing attention_dim and num_heads
             combine_mlp_config: MLPConfig for combination MLP
+            feedforward_mlp_config: MLPConfig for feedforward transformation
             device: torch device (CPU or CUDA) for parameter initialization and computation.
         """
         super().__init__()
@@ -843,6 +865,10 @@ class TriAxialAttention(nn.Module):
         mlp_input_size = embed_dim * 4
         self.combine_mlp = MLP(mlp_input_size, embed_dim, combine_mlp_config, device)
 
+        # Feedforward components (pre-normalization pattern)
+        self.norm_feedforward = nn.LayerNorm(embed_dim, device=device)
+        self.feedforward_mlp = MLP(embed_dim, embed_dim, feedforward_mlp_config, device)
+
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -856,7 +882,7 @@ class TriAxialAttention(nn.Module):
 
     def forward(self, data):
         """
-        Apply triaxial attention to destination nodes.
+        Apply triaxial attention to destination nodes, followed by feedforward transformation.
 
         Args:
             data: HeteroData graph with node features (.x) and edge indices
@@ -930,5 +956,9 @@ class TriAxialAttention(nn.Module):
 
         # Apply residual update
         data[self.dest_type].x = dest_x + delta
+
+        # Apply feedforward step with pre-normalization: x = x + mlp(Norm(x))
+        x = data[self.dest_type].x
+        data[self.dest_type].x = x + self.feedforward_mlp(self.norm_feedforward(x))
 
         return data

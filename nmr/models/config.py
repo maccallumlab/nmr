@@ -93,4 +93,5 @@ class ModelConfig:
     message_mlp: MLPConfig = field(default_factory=MLPConfig)  # For message passing
     combine_mlp: MLPConfig = field(default_factory=lambda: MLPConfig(hidden_size=256, num_layers=1))  # For attention combination
     value_mlp: MLPConfig = field(default_factory=lambda: MLPConfig(hidden_size=64, num_layers=1))  # For value head
+    feedforward_mlp: MLPConfig = field(default_factory=lambda: MLPConfig(hidden_size=256, num_layers=1))  # For attention feedforward
     attention: AttentionConfig = field(default_factory=AttentionConfig)  # Attention config for transformer

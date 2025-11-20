@@ -8,7 +8,7 @@ to create the complete neural network for NMR assignment.
 import torch
 import torch.nn as nn
 
-from .config import AttentionConfig, ShiftStandardizeConfig, MLPConfig, ModelConfig, SharedConfig
+from .config import ModelConfig
 from .heads import PolicyCalc, ValueCalc
 from .mlp import MLP
 from .pair import AssignedPair
@@ -130,6 +130,7 @@ class NMRTransformerLayer(nn.Module):
             embed_dim=embed_dim,
             attention_config=config.attention,
             combine_mlp_config=config.combine_mlp,
+            feedforward_mlp_config=config.feedforward_mlp,
             device=device,
         )
 
@@ -143,6 +144,7 @@ class NMRTransformerLayer(nn.Module):
             embed_dim=embed_dim,
             attention_config=config.attention,
             combine_mlp_config=config.combine_mlp,
+            feedforward_mlp_config=config.feedforward_mlp,
             device=device,
         )
 
@@ -156,6 +158,7 @@ class NMRTransformerLayer(nn.Module):
             embed_dim=embed_dim,
             attention_config=config.attention,
             combine_mlp_config=config.combine_mlp,
+            feedforward_mlp_config=config.feedforward_mlp,
             device=device,
         )
 
@@ -166,6 +169,7 @@ class NMRTransformerLayer(nn.Module):
             edge_name="noe_res_attn",
             embed_dim=embed_dim,
             attention_config=config.attention,
+            feedforward_mlp_config=config.feedforward_mlp,
             device=device,
         )
 
@@ -176,6 +180,7 @@ class NMRTransformerLayer(nn.Module):
             edge_name="noe_peak_attn",
             embed_dim=embed_dim,
             attention_config=config.attention,
+            feedforward_mlp_config=config.feedforward_mlp,
             device=device,
         )
 

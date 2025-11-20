@@ -46,7 +46,7 @@ class TestBiAxialAttentionInitialization(unittest.TestCase):
             dest_type="Noe",
             edge_name_1="biaxial_attn_1",
             edge_name_2="biaxial_attn_2",
-            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, feedforward_mlp_config=config.feedforward_mlp, device="cpu",
         )
 
         # Verify it's an nn.Module
@@ -85,7 +85,7 @@ class TestBiAxialAttentionForward(unittest.TestCase):
             dest_type="Noe",
             edge_name_1="biaxial_attn_1",
             edge_name_2="biaxial_attn_2",
-            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, feedforward_mlp_config=config.feedforward_mlp, device="cpu",
         )
 
     def test_forward_basic(self):
@@ -215,7 +215,7 @@ class TestBiAxialAttentionFeatureCombination(unittest.TestCase):
             dest_type="Noe",
             edge_name_1="biaxial_attn_1",
             edge_name_2="biaxial_attn_2",
-            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, feedforward_mlp_config=config.feedforward_mlp, device="cpu",
         )
 
         # Create simple graph
@@ -259,7 +259,7 @@ class TestBiAxialAttentionFeatureCombination(unittest.TestCase):
             dest_type="Noe",
             edge_name_1="biaxial_attn_1",
             edge_name_2="biaxial_attn_2",
-            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, feedforward_mlp_config=config.feedforward_mlp, device="cpu",
         )
 
         # Create graph
@@ -299,7 +299,7 @@ class TestBiAxialAttentionEdgeCases(unittest.TestCase):
             dest_type="Noe",
             edge_name_1="biaxial_attn_1",
             edge_name_2="biaxial_attn_2",
-            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, feedforward_mlp_config=config.feedforward_mlp, device="cpu",
         )
 
     def test_zero_edges_attention_1(self):
@@ -391,7 +391,7 @@ class TestBiAxialAttentionRealisticGraphs(unittest.TestCase):
                     dest_type="Noe",
                     edge_name_1="biaxial_attn_1",
                     edge_name_2="biaxial_attn_2",
-                    embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
+                    embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, feedforward_mlp_config=config.feedforward_mlp, device="cpu",
                 )
 
                 data = HeteroData()
@@ -425,7 +425,7 @@ class TestBiAxialAttentionRealisticGraphs(unittest.TestCase):
             dest_type="Noe",
             edge_name_1="biaxial_attn_1",
             edge_name_2="biaxial_attn_2",
-            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, feedforward_mlp_config=config.feedforward_mlp, device="cpu",
         )
 
         data = HeteroData()
@@ -466,7 +466,7 @@ class TestBiAxialAttentionDimensionFlow(unittest.TestCase):
             dest_type="Noe",
             edge_name_1="biaxial_attn_1",
             edge_name_2="biaxial_attn_2",
-            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, feedforward_mlp_config=config.feedforward_mlp, device="cpu",
         )
 
         # Create graph
@@ -527,7 +527,7 @@ class TestBiAxialAttentionIntegration(unittest.TestCase):
             dest_type="Noe",
             edge_name_1="biaxial_attn_1",
             edge_name_2="biaxial_attn_2",
-            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, feedforward_mlp_config=config.feedforward_mlp, device="cpu",
         )
 
         data = HeteroData()
@@ -558,7 +558,7 @@ class TestBiAxialAttentionIntegration(unittest.TestCase):
             dest_type="Noe",
             edge_name_1="biaxial_attn_1",
             edge_name_2="biaxial_attn_2",
-            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, feedforward_mlp_config=config.feedforward_mlp, device="cpu",
         )
 
         # Should be compatible with nn.ModuleList
@@ -575,7 +575,7 @@ class TestBiAxialAttentionIntegration(unittest.TestCase):
             dest_type="Noe",
             edge_name_1="biaxial_attn_1",
             edge_name_2="biaxial_attn_2",
-            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, feedforward_mlp_config=config.feedforward_mlp, device="cpu",
         )
 
         module2 = BiAxialAttention(
@@ -584,7 +584,7 @@ class TestBiAxialAttentionIntegration(unittest.TestCase):
             dest_type="Noe",
             edge_name_1="biaxial_attn_1",
             edge_name_2="biaxial_attn_2",
-            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, device="cpu",
+            embed_dim=config.shared.embed_dim, attention_config=config.attention, combine_mlp_config=config.combine_mlp, feedforward_mlp_config=config.feedforward_mlp, device="cpu",
         )
 
         # Create graph

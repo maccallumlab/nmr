@@ -42,12 +42,13 @@ def make_attention_args(config, device):
     """
     Helper to extract attention parameters from config for new explicit signatures.
 
-    Returns dict with embed_dim, attention_config, device that can be unpacked
-    into attention module constructors.
+    Returns dict with embed_dim, attention_config, feedforward_mlp_config, device
+    that can be unpacked into attention module constructors.
     """
     return {
         "embed_dim": config.shared.embed_dim,
         "attention_config": config.attention,
+        "feedforward_mlp_config": config.feedforward_mlp,
         "device": device,
     }
 
@@ -58,6 +59,7 @@ def make_biaxial_args(config, device):
         "embed_dim": config.shared.embed_dim,
         "attention_config": config.attention,
         "combine_mlp_config": config.combine_mlp,
+        "feedforward_mlp_config": config.feedforward_mlp,
         "device": device,
     }
 
