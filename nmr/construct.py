@@ -2,38 +2,58 @@
 Graph construction utilities for NMR assignment.
 
 This module constructs heterogeneous graphs from NMR data for chemical shift assignment
-using Graph Neural Networks. The graph structure includes:
+using Graph Neural Networks. Graph structure is architecture-dependent based on ModelConfig.layer_type.
 
-Node Types:
-- Residue: Protein residues with raw data (.xyz, .shifts, .flags) and working features (.x)
-- Peak: Observed chemical shifts with raw data (.shifts, .flags) and working features (.x)
-- Noe: NOE distance constraints with raw data (.shifts) and working features (.x)
-- Triple nodes: Four types representing different relationship configurations:
-  * ResidueResidueNoeTriple: (Residue, Residue, Noe) - Updates coordinates and shifts
-  * ResiduePeakNoeTriple: (Residue, Peak, Noe) - Updates shifts only
-  * PeakResidueNoeTriple: (Peak, Residue, Noe) - Updates shifts only
-  * PeakPeakNoeTriple: (Peak, Peak, Noe) - Updates shifts only
-- Value aggregation nodes: VALUE_NOE, VALUE_SHIFT, VALUE_RES
+ARCHITECTURE-SPECIFIC NODES AND EDGES:
 
-Attribute Structure:
+Triple Architecture (layer_type="triple"):
+  Node Types:
+  - Residue, Peak, Noe (data nodes)
+  - ResidueResidueNoeTriple, ResiduePeakNoeTriple, PeakResidueNoeTriple, PeakPeakNoeTriple
+  - VALUE_NOE, VALUE_SHIFT, VALUE_RES (value aggregation nodes)
+
+  Edge Types:
+  - Triple propagation edges (12 types): (source, "prop_first/second/noe", triple_type)
+  - Value aggregation edges: (node_type, "aggregate/extract", value_node_type)
+  - Assignment edges: (Peak, "assigned_to", Residue)
+
+Transformer Architecture (layer_type="transformer"):
+  Node Types:
+  - Residue, Peak, Noe (data nodes)
+  - VALUE_NOE, VALUE_SHIFT, VALUE_RES (value aggregation nodes)
+
+  Edge Types:
+  - Attention edges (8 types): Self-attention and cross-attention edges
+    * (Residue, "res_res_attn", Residue) - Residue self-attention
+    * (Peak, "peak_peak_attn", Peak) - Peak self-attention
+    * (Residue, "res_peak_attn", Peak) - Cross-attention
+    * (Peak, "peak_res_attn", Residue) - Cross-attention
+    * (Residue, "res_noe_attn", Noe) - Cross-attention
+    * (Noe, "noe_res_attn", Residue) - Cross-attention
+    * (Peak, "peak_noe_attn", Noe) - Cross-attention
+    * (Noe, "noe_peak_attn", Peak) - Cross-attention
+  - Value aggregation edges: (node_type, "aggregate/extract", value_node_type)
+  - Assignment edges: (Peak, "assigned_to", Residue)
+
+SHARED STRUCTURE:
+
+Node Attributes (all architectures):
 - Raw data attributes (IMMUTABLE, set once during construction):
-  * Residue.xyz [n, 3]: cartesian coordinates
-  * Residue.shifts [n, 2]: predicted chemical shifts
+  * Residue.xyz [n, 3]: normalized cartesian coordinates
+  * Residue.shifts [n, 2]: predicted chemical shifts [H, N]
   * Residue.flags [n, 1]: assignment status (previously assigned)
-  * Peak.shifts [n, 2]: observed chemical shifts
+  * Peak.shifts [n, 2]: observed chemical shifts [H, N]
   * Peak.flags [n, 2]: assignment status (to be assigned, previously assigned)
-  * Noe.shifts [n, 3]: NOE shift values
+  * Noe.shifts [n, 3]: NOE shift values [N, H', H"]
 - Working feature attributes (updated during message passing):
   * .x for all node types: embedded features created by EmbedFeatures layer
 
-Edge Types:
-- Bidirectional propagation edges: Used for both gather (source → triple) and scatter (triple → source)
-  * (source_node, "prop_first", triple_type) - First position connections
-  * (source_node, "prop_second", triple_type) - Second position connections
-  * ("Noe", "prop_noe", triple_type) - NOE constraint connections
-  Direction is controlled by flow parameter in MessagePassing layers
-- Value aggregation edges: Aggregate features for value prediction
-  * (node_type, "aggregate", value_node_type)
+Common Edges (both architectures):
+- Assignment edges: (Peak, "assigned_to", Residue)
+- Value aggregation edges:
+  * (Peak, "SHIFT_extract", VALUE_SHIFT)
+  * (Noe, "aggregate", VALUE_NOE)
+  * (Residue, "RES_extract", VALUE_RES)
 """
 
 from typing import Any, Dict, Tuple
@@ -51,16 +71,21 @@ def construct_graph(
     """
     Constructs a complete heterogeneous graph from a history state.
 
+    Graph construction is architecture-dependent based on config.layer_type:
+    - layer_type="triple": Builds triple nodes and triple propagation edges
+    - layer_type="transformer": Builds transformer attention edges only
+    - Both: Always builds data nodes (Residue, Peak, Noe), value nodes, and value edges
+
     Args:
         history: Dictionary containing coordinates, shifts, NOEs, and assignment state
         device: Device to place tensors on ('cpu' or 'cuda')
-        config: ModelConfig containing embed_dim for .x initialization
+        config: ModelConfig containing embed_dim and layer_type for architecture selection
 
     Returns:
-        HeteroData graph with all nodes and edges constructed
+        HeteroData graph with architecture-specific nodes and edges constructed
     """
     data = construct_node_data(history, device, config)
-    data = construct_edges(data, device)
+    data = construct_edges(data, device, config)
     return data
 
 
@@ -70,19 +95,26 @@ def construct_node_data(
     """
     Builds graph nodes from input histories.
 
-    Creates nodes for Residue, Peak, Noe, triple types, and value aggregation nodes.
+    Creates nodes for Residue, Peak, Noe, and value aggregation nodes. Conditionally
+    creates triple nodes based on architecture type:
+    - layer_type="triple": Creates all four triple node types
+    - layer_type="transformer": Skips triple node creation
 
     Args:
         histories: Dictionary containing coordinates, shifts, NOEs, and assignment state
         device: Device to place tensors on ('cpu' or 'cuda')
-        config: ModelConfig containing embed_dim for .x initialization
+        config: ModelConfig containing embed_dim for .x initialization and layer_type
 
     Returns:
-        HeteroData graph with all nodes constructed
+        HeteroData graph with architecture-specific nodes constructed
     """
     data = HeteroData()
     data = _construct_data_nodes(data, histories, device, config)
-    data = _construct_triple_nodes(data, device, config)
+
+    # Only create triple nodes for triple architecture
+    if config.layer_type == "triple":
+        data = _construct_triple_nodes(data, device, config)
+
     data = _construct_value_nodes(data, device, config)
     data = _construct_node_features(data, histories)
     data.shift_to_assign = torch.tensor(
@@ -91,39 +123,49 @@ def construct_node_data(
     return data
 
 
-def construct_edges(data: HeteroData, device: torch.device | str) -> HeteroData:
+def construct_edges(data: HeteroData, device: torch.device | str, config: ModelConfig) -> HeteroData:
     """
-    Constructs all edge indices for the heterogeneous graph.
+    Constructs edge indices for the heterogeneous graph.
 
-    Creates bidirectional propagation edges, value aggregation edges, and policy edges
-    for all triple configurations, plus transformer attention edges.
+    Edge construction is architecture-dependent based on config.layer_type:
+    - layer_type="triple": Creates triple propagation edges only
+    - layer_type="transformer": Creates transformer attention edges only
+    - Both: Always creates value aggregation edges
 
     Args:
         data: HeteroData graph with nodes already constructed
         device: Device to place tensors on ('cpu' or 'cuda')
+        config: ModelConfig containing layer_type for conditional edge construction
 
     Returns:
-        HeteroData graph with all edges constructed
+        HeteroData graph with architecture-specific edges constructed
     """
     num_noe = len(data["Noe"].shifts)
     num_peak = len(data["Peak"].shifts)
     num_residue = len(data["Residue"].xyz)
 
-    # Add all edge types for each triple configuration
-    _add_triple_edges(
-        data, ("Residue", "Residue", "Noe"), num_noe, num_peak, num_residue, device
-    )
-    _add_triple_edges(
-        data, ("Residue", "Peak", "Noe"), num_noe, num_peak, num_residue, device
-    )
-    _add_triple_edges(
-        data, ("Peak", "Residue", "Noe"), num_noe, num_peak, num_residue, device
-    )
-    _add_triple_edges(
-        data, ("Peak", "Peak", "Noe"), num_noe, num_peak, num_residue, device
-    )
+    # Add triple edges only for triple architecture
+    if config.layer_type == "triple":
+        _add_triple_edges(
+            data, ("Residue", "Residue", "Noe"), num_noe, num_peak, num_residue, device
+        )
+        _add_triple_edges(
+            data, ("Residue", "Peak", "Noe"), num_noe, num_peak, num_residue, device
+        )
+        _add_triple_edges(
+            data, ("Peak", "Residue", "Noe"), num_noe, num_peak, num_residue, device
+        )
+        _add_triple_edges(
+            data, ("Peak", "Peak", "Noe"), num_noe, num_peak, num_residue, device
+        )
+
+    # Add transformer attention edges only for transformer architecture
+    if config.layer_type == "transformer":
+        _add_transformer_attention_edges(data, num_noe, num_peak, num_residue, device)
+
+    # Always add value aggregation edges (used by both architectures)
     _add_value_aggregation_edges(data, num_noe, num_peak, num_residue, device)
-    _add_transformer_attention_edges(data, num_noe, num_peak, num_residue, device)
+
     return data
 
 

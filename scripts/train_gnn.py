@@ -11,6 +11,7 @@ from nmr.construct import construct_graph
 from nmr.models import NMRNet, ModelConfig
 from nmr.nmr_gym.io import load_histories
 from torch_geometric.loader import DataLoader
+import random
 
 
 def extract_data(pickle_file):
@@ -54,6 +55,98 @@ def preprocess_data(examples, device, config):
         graphs.append(graph)
 
     return graphs
+
+
+def split_train_test(graphs, train_ratio=0.8, seed=None):
+    """
+    Split preprocessed graphs into train and test sets.
+
+    Args:
+        graphs: List of HeteroData graphs with targets attached
+        train_ratio: Fraction of data to use for training (default: 0.8)
+        seed: Random seed for reproducibility (default: None)
+
+    Returns:
+        Tuple of (train_graphs, test_graphs)
+    """
+    # Create a copy of the list to avoid modifying the original
+    shuffled_graphs = graphs.copy()
+
+    # Shuffle with optional seed
+    if seed is not None:
+        random.seed(seed)
+        torch.manual_seed(seed)
+
+    random.shuffle(shuffled_graphs)
+
+    # Calculate split point
+    split_idx = int(len(shuffled_graphs) * train_ratio)
+
+    # Split into train and test
+    train_graphs = shuffled_graphs[:split_idx]
+    test_graphs = shuffled_graphs[split_idx:]
+
+    return train_graphs, test_graphs
+
+
+def evaluate_test_set(net, test_loader):
+    """
+    Evaluate model on test set without gradient computation.
+
+    Args:
+        net: The neural network model
+        test_loader: DataLoader for test set
+
+    Returns:
+        Dictionary with test metrics (loss, accuracy)
+    """
+    net.eval()
+
+    total_loss = 0
+    total_correct = 0
+    total_count = 0
+
+    with torch.no_grad():
+        for xs in test_loader:
+            _, policies = net(xs)
+
+            # Unbatch graphs to access per-graph attributes
+            graphs_list = xs.to_data_list()
+
+            # Compute loss and accuracy same way as training
+            for graph, policy in zip(graphs_list, policies):
+                action = graph.action
+                shift_to_assign = graph.shift_to_assign.item()
+
+                # Cross-entropy loss for current assignment
+                current_logits = policy[shift_to_assign].unsqueeze(0)
+                ce_loss = torch.nn.functional.cross_entropy(current_logits, action)
+
+                # Cross-entropy loss for all previous assignments
+                edge_index = graph["Peak", "assigned_to", "Residue"].edge_index
+                if edge_index.shape[1] > 0:
+                    assigned_peak_ids = edge_index[0]
+                    assigned_residue_ids = edge_index[1]
+                    assigned_logits = policy[assigned_peak_ids]
+                    prev_ce_loss = torch.nn.functional.cross_entropy(
+                        assigned_logits, assigned_residue_ids, reduction='sum'
+                    )
+                    ce_loss = ce_loss + prev_ce_loss
+
+                total_loss += ce_loss.item()
+
+                y_pred = torch.argmax(current_logits)
+                if y_pred == action:
+                    total_correct += 1
+                total_count += 1
+
+    # Return to train mode
+    net.train()
+
+    return {
+        'loss': total_loss / total_count if total_count > 0 else 0,
+        'accuracy': total_correct / total_count if total_count > 0 else 0
+    }
 
 
 def main():
@@ -100,6 +193,34 @@ def main():
         default=1,
         help="Number of NMR layers in the model (default: 1)",
     )
+    parser.add_argument(
+        "--architecture",
+        type=str,
+        default="triple",
+        choices=["triple", "transformer"],
+        help=(
+            "GNN layer architecture type: 'triple' for triple-based message passing, "
+            "'transformer' for attention-based architecture (default: triple)"
+        ),
+    )
+    parser.add_argument(
+        "--train-split",
+        type=float,
+        default=0.8,
+        help="Fraction of data to use for training (default: 0.8)",
+    )
+    parser.add_argument(
+        "--test-eval-interval",
+        type=int,
+        default=10,
+        help="Evaluate on test set every N batches (default: 10)",
+    )
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=None,
+        help="Random seed for train-test split (default: None, random split)",
+    )
 
     args = parser.parse_args()
 
@@ -107,18 +228,27 @@ def main():
     device = args.device
 
     # Create config (needed for both graph construction and network)
-    config = ModelConfig(num_nmr_layers=args.num_nmr_layers)
+    config = ModelConfig(num_nmr_layers=args.num_nmr_layers, layer_type=args.architecture)
 
     # Load data
     examples = extract_data(args.histories)
     nmr_graphs = preprocess_data(examples, device, config)
 
+    # Split into train and test sets
+    train_graphs, test_graphs = split_train_test(
+        nmr_graphs, train_ratio=args.train_split, seed=args.split_seed
+    )
+
+    print(f"Dataset split: {len(train_graphs)} training, {len(test_graphs)} test examples")
+
     batch_size = args.batch_size
     epochs = args.epochs
     eval_interval = args.eval_interval
+    test_eval_interval = args.test_eval_interval
 
-    # Targets are now attached to graphs, so shuffling is safe
-    data_loader = DataLoader(nmr_graphs, batch_size=batch_size, shuffle=False)
+    # Create separate DataLoaders for train and test
+    train_loader = DataLoader(train_graphs, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_graphs, batch_size=batch_size, shuffle=False)
 
     # Create our network and optimizer
     net = NMRNet(device, config)
@@ -127,9 +257,18 @@ def main():
     iteration = 0
     for epoch in range(epochs):
 
-        for xs in data_loader:
+        for xs in train_loader:
             net.train()
             iteration += 1
+
+            # Periodically evaluate on test set based on iteration count
+            if iteration % test_eval_interval == 0:
+                test_metrics = evaluate_test_set(net, test_loader)
+                print(
+                    f"Iteration {iteration}, "
+                    f"Test Loss: {test_metrics['loss']:.4f}, "
+                    f"Test Accuracy: {test_metrics['accuracy']:.4f}"
+                )
 
             _, policies = net(xs)
 
