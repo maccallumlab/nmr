@@ -45,6 +45,8 @@ import torch
 import torch.nn as nn
 from torch_geometric.nn import MessagePassing
 
+from .mlp import MLP
+
 
 # ============================================================================
 # MLP Architecture Dimension Functions
@@ -293,10 +295,6 @@ class ResidueUpdate(nn.Module):
         self.device = device
         self.config = config
 
-        # Get MLP configuration from config
-        hidden_size = config.message_mlp.hidden_size
-        num_layers = config.message_mlp.num_layers
-
         # Calculate input/output sizes from config
         feature_dim = config.shared.embed_dim
         input_size = residue_update_input_size(feature_dim)
@@ -311,21 +309,7 @@ class ResidueUpdate(nn.Module):
         self.norm_noe_features = nn.LayerNorm(feature_dim).to(device)
 
         # Build MLP (no internal LayerNorm - follows pre-norm pattern)
-        layers = []
-
-        # First hidden layer
-        layers.append(nn.Linear(input_size, hidden_size))
-        layers.append(nn.ReLU())
-
-        # Additional hidden layers
-        for _ in range(num_layers - 1):
-            layers.append(nn.Linear(hidden_size, hidden_size))
-            layers.append(nn.ReLU())
-
-        # Output layer
-        layers.append(nn.Linear(hidden_size, output_size))
-
-        self.mlp = nn.Sequential(*layers).to(device)
+        self.mlp = MLP(input_size, output_size, config.message_mlp, device)
 
     def forward(self, data):
         """
@@ -419,10 +403,6 @@ class PeakUpdate(nn.Module):
         self.device = device
         self.config = config
 
-        # Get MLP configuration from config
-        hidden_size = config.message_mlp.hidden_size
-        num_layers = config.message_mlp.num_layers
-
         # Calculate input/output sizes from config
         feature_dim = config.shared.embed_dim
         input_size = peak_update_input_size(feature_dim)
@@ -437,21 +417,7 @@ class PeakUpdate(nn.Module):
         self.norm_noe_features = nn.LayerNorm(feature_dim).to(device)
 
         # Build MLP (no internal LayerNorm - follows pre-norm pattern)
-        layers = []
-
-        # First hidden layer
-        layers.append(nn.Linear(input_size, hidden_size))
-        layers.append(nn.ReLU())
-
-        # Additional hidden layers
-        for _ in range(num_layers - 1):
-            layers.append(nn.Linear(hidden_size, hidden_size))
-            layers.append(nn.ReLU())
-
-        # Output layer
-        layers.append(nn.Linear(hidden_size, output_size))
-
-        self.mlp = nn.Sequential(*layers).to(device)
+        self.mlp = MLP(input_size, output_size, config.message_mlp, device)
 
     def forward(self, data):
         """

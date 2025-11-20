@@ -34,6 +34,8 @@ import torch
 import torch.nn as nn
 from torch_geometric.nn import MessagePassing
 
+from .mlp import MLP
+
 
 # ============================================================================
 # SECTION 1: Message Passing Operations
@@ -71,10 +73,6 @@ class AssignedPeakToResidueMessage(MessagePassing):
         self.config = config
         self.edge_type = ("Peak", "assigned_to", "Residue")
 
-        # Extract parameters from config
-        hidden_size = config.message_mlp.hidden_size
-        num_layers = config.message_mlp.num_layers
-
         # Calculate input/output sizes from config
         # NOTE: With unified architecture, .x is [embed_dim], not split into shift+feature
         embed_dim = config.shared.embed_dim
@@ -95,21 +93,7 @@ class AssignedPeakToResidueMessage(MessagePassing):
         self.norm_residue = nn.LayerNorm(embed_dim).to(device)
 
         # Build MLP (no internal LayerNorm - follows pre-norm pattern)
-        layers = []
-
-        # First hidden layer
-        layers.append(nn.Linear(input_size, hidden_size))
-        layers.append(nn.ReLU())
-
-        # Additional hidden layers
-        for _ in range(num_layers - 1):
-            layers.append(nn.Linear(hidden_size, hidden_size))
-            layers.append(nn.ReLU())
-
-        # Output layer
-        layers.append(nn.Linear(hidden_size, output_size))
-
-        self.mlp = nn.Sequential(*layers).to(device)
+        self.mlp = MLP(input_size, output_size, config.message_mlp, device)
 
     def forward(self, data):
         """
@@ -221,10 +205,6 @@ class AssignedResidueToPeakMessage(MessagePassing):
         self.config = config
         self.edge_type = ("Peak", "assigned_to", "Residue")
 
-        # Extract parameters from config
-        hidden_size = config.message_mlp.hidden_size
-        num_layers = config.message_mlp.num_layers
-
         # Calculate input/output sizes from config
         # NOTE: With unified architecture, .x is [embed_dim], not split into shift+feature
         embed_dim = config.shared.embed_dim
@@ -245,21 +225,7 @@ class AssignedResidueToPeakMessage(MessagePassing):
         self.norm_peak = nn.LayerNorm(embed_dim).to(device)
 
         # Build MLP (no internal LayerNorm - follows pre-norm pattern)
-        layers = []
-
-        # First hidden layer
-        layers.append(nn.Linear(input_size, hidden_size))
-        layers.append(nn.ReLU())
-
-        # Additional hidden layers
-        for _ in range(num_layers - 1):
-            layers.append(nn.Linear(hidden_size, hidden_size))
-            layers.append(nn.ReLU())
-
-        # Output layer
-        layers.append(nn.Linear(hidden_size, output_size))
-
-        self.mlp = nn.Sequential(*layers).to(device)
+        self.mlp = MLP(input_size, output_size, config.message_mlp, device)
 
     def forward(self, data):
         """

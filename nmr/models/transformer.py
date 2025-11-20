@@ -37,6 +37,7 @@ from torch_geometric.nn import MessagePassing
 from torch_geometric.utils import softmax
 
 from .config import AttentionConfig, MLPConfig, ModelConfig
+from .mlp import MLP
 
 
 # ============================================================================
@@ -624,13 +625,9 @@ class BiAxialAttention(nn.Module):
         self.norm_source_2 = nn.LayerNorm(embed_dim, device=device)
         self.norm_dest = nn.LayerNorm(embed_dim, device=device)
 
-        # Combination MLP: Linear -> ReLU -> Linear
+        # Combination MLP
         mlp_input_size = embed_dim * 3
-        self.combine_mlp = nn.Sequential(
-            nn.Linear(mlp_input_size, combine_mlp_config.hidden_size, device=device),
-            nn.ReLU(),
-            nn.Linear(combine_mlp_config.hidden_size, embed_dim, device=device),
-        )
+        self.combine_mlp = MLP(mlp_input_size, embed_dim, combine_mlp_config, device)
 
         self.reset_parameters()
 
@@ -641,12 +638,7 @@ class BiAxialAttention(nn.Module):
         if self.dest_linear.bias is not None:
             nn.init.zeros_(self.dest_linear.bias)
 
-        # Initialize MLP layers
-        for module in self.combine_mlp:
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
+        # MLP initialization is handled by MLP class constructor
 
     def forward(self, data):
         """
@@ -846,15 +838,10 @@ class TriAxialAttention(nn.Module):
         self.norm_dest = nn.LayerNorm(embed_dim, device=device)
 
         # Combination MLP: merges attention outputs with destination features
-        # Architecture: Linear -> ReLU -> Linear (no internal LayerNorm - pre-norm pattern)
         # Input: delta_1 + delta_2 + delta_3 + dest_transformed = channels * 4
         # Output: channels (for residual application)
         mlp_input_size = embed_dim * 4
-        self.combine_mlp = nn.Sequential(
-            nn.Linear(mlp_input_size, combine_mlp_config.hidden_size, device=device),
-            nn.ReLU(),
-            nn.Linear(combine_mlp_config.hidden_size, embed_dim, device=device),
-        )
+        self.combine_mlp = MLP(mlp_input_size, embed_dim, combine_mlp_config, device)
 
         self.reset_parameters()
 
@@ -865,12 +852,7 @@ class TriAxialAttention(nn.Module):
         if self.dest_linear.bias is not None:
             nn.init.zeros_(self.dest_linear.bias)
 
-        # Initialize MLP layers
-        for module in self.combine_mlp:
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
+        # MLP initialization is handled by MLP class constructor
 
     def forward(self, data):
         """

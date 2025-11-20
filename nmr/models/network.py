@@ -10,6 +10,7 @@ import torch.nn as nn
 
 from .config import AttentionConfig, ShiftStandardizeConfig, MLPConfig, ModelConfig, SharedConfig
 from .heads import PolicyCalc, ValueCalc
+from .mlp import MLP
 from .pair import AssignedPair
 from .triple import (
     PeakPeakNoeTriple,
@@ -237,28 +238,11 @@ class EmbedFeatures(nn.Module):
 
         # Embedding MLPs: input → hidden → output
         # Residue: [shifts(2) + flags(1)] = 3 → embed_dim
-        self.residue_embed = self._build_mlp(3, config.embed_mlp, self.embed_dim)
+        self.residue_embed = MLP(3, self.embed_dim, config.embed_mlp, self.device)
         # Peak: [shifts(2) + flags(2)] = 4 → embed_dim
-        self.peak_embed = self._build_mlp(4, config.embed_mlp, self.embed_dim)
+        self.peak_embed = MLP(4, self.embed_dim, config.embed_mlp, self.device)
         # NOE: shifts(3) → embed_dim
-        self.noe_embed = self._build_mlp(3, config.embed_mlp, self.embed_dim)
-
-    def _build_mlp(self, input_dim: int, mlp_config: MLPConfig, output_dim: int):
-        """Build an MLP: input_dim → hidden → output_dim"""
-        layers = []
-        layers.append(nn.Linear(input_dim, mlp_config.hidden_size, device=self.device))
-        layers.append(nn.ReLU())
-
-        for _ in range(mlp_config.num_layers - 1):
-            layers.append(
-                nn.Linear(mlp_config.hidden_size, mlp_config.hidden_size, device=self.device)
-            )
-            layers.append(nn.ReLU())
-
-        layers.append(
-            nn.Linear(mlp_config.hidden_size, output_dim, device=self.device)
-        )
-        return nn.Sequential(*layers)
+        self.noe_embed = MLP(3, self.embed_dim, config.embed_mlp, self.device)
 
     def _normalize_shifts(self, shifts, is_noe=False):
         """
